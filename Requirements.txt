@@ -1,0 +1,13 @@
+pymupdf
+python-docx
+pandas
+numpy
+scikit-learn
+rapidfuzz
+python-dotenv
+boto3
+pydantic
+pydantic-settings
+fastapi
+uvicorn
+python-multipart
