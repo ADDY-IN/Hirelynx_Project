@@ -2,6 +2,7 @@ from rapidfuzz import fuzz
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Dict, Any
+import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,6 @@ class ScoringEngine:
         if self.encoder and resume_text and jd_description:
             try:
                 embeddings = self.encoder.encode([resume_text, jd_description])
-                import numpy as np
                 sim = cosine_similarity(np.array([embeddings[0]]), np.array([embeddings[1]]))[0][0]
                 sem_score = max(0.0, min(100.0, float(sim) * 100))
             except Exception as e:
@@ -50,5 +50,4 @@ class ScoringEngine:
             "matched_skills": matched,
             "recommendation": "Strong Match" if final > 80 else "Good Match" if final > 60 else "Potential Match" if final > 40 else "Low Match"
         }
-
 
