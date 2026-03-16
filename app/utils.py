@@ -50,12 +50,29 @@ def tokenize_text(text: str) -> List[str]:
 
 # --- JD Keyword Processing ---
 
-STOPWORDS = {"and", "or", "the", "with", "for", "are", "looking", "experience"}
+STOPWORDS = {"and", "or", "the", "with", "for", "are", "looking", "experience", "in", "of", "to", "a"}
 
 def extract_jd_keywords(description: str) -> List[str]:
     """
-    Extract meaningful keywords from JD.
+    Extract meaningful keywords/phrases from JD.
+    Keeps consecutive non-stopwords as phrases (N-grams) for better semantic matching.
     """
     cleaned = clean_text(description)
     tokens = cleaned.split()
-    return list(set([t for t in tokens if t not in STOPWORDS and len(t) > 2]))
+    
+    keywords = set()
+    current_phrase = []
+    
+    for token in tokens:
+        if token in STOPWORDS or len(token) <= 2:
+            if current_phrase:
+                keywords.add(" ".join(current_phrase))
+                current_phrase = []
+        else:
+            current_phrase.append(token)
+            keywords.add(token) # also store the single word
+            
+    if current_phrase:
+        keywords.add(" ".join(current_phrase))
+        
+    return list(set([k for k in keywords if len(k) > 2]))

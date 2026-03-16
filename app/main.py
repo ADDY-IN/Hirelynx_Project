@@ -11,20 +11,22 @@ async def root():
     return {"message": "Hirelynx Resume Scorer API", "docs": "/docs"}
 
 @app.post("/v1/parser/resume", response_model=CandidateProfile)
-async def upload_resume(file_path: str):
+async def upload_resume(s3_key: str):
     """
-    Simulates a file upload/processing from a path. 
-    In production, this would accept a file or an S3 key.
+    Triggers parsing of a resume securely stored in S3.
     """
     try:
-        return parse_and_store_resume(file_path)
+        return parse_and_store_resume(s3_key)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/v1/parser/jd", response_model=JobProfile)
-async def upload_jd(file_path: str):
+async def upload_jd(s3_key: str):
+    """
+    Triggers parsing of a job description securely stored in S3.
+    """
     try:
-        return parse_and_store_jd(file_path)
+        return parse_and_store_jd(s3_key)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

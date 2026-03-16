@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  hirelynx-scorer:
+    build: .
+    container_name: hirelynx-scorer
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Optional: Persist the simulated DB locally while running in docker
+      - ./data:/app/data
+    restart: unless-stopped

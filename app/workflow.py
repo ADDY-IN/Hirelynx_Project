@@ -23,20 +23,32 @@ def _load_db() -> Dict[str, List[Any]]:
 
 def _save_db(data: Dict[str, Any]):
     try:
+        db_dir = os.path.dirname(settings.DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+            
         with open(settings.DB_PATH, "w") as f:
             json.dump(data, f, indent=4, default=str)
     except Exception as e:
         logger.error(f"Failed to save DB: {e}")
+        logger.error(f"Failed to save DB: {e}")
 
 # --- Service Layer ---
 
-def parse_and_store_resume(file_path: str) -> CandidateProfile:
+def parse_and_store_resume(s3_key: str) -> CandidateProfile:
+    from app.s3_service import s3_service
     db = _load_db()
-    raw = extract_text(file_path)
+    
+    local_path = s3_service.download_file(s3_key)
+    try:
+        raw = extract_text(local_path)
+    finally:
+        if os.path.exists(local_path):
+            os.remove(local_path)
     
     profile = CandidateProfile(
         id=len(db["candidates"]) + 1,
-        resumeS3Key=file_path,
+        resumeS3Key=s3_key,
         resumeParseStatus=ResumeParseStatus.PARSED,
         resumeLastParsedAt=datetime.now(),
         resumeParsedJson={"text": clean_text(raw)}
@@ -45,19 +57,27 @@ def parse_and_store_resume(file_path: str) -> CandidateProfile:
     _save_db(db)
     return profile
 
-def parse_and_store_jd(file_path: str) -> JobProfile:
+def parse_and_store_jd(s3_key: str) -> JobProfile:
+    from app.s3_service import s3_service
     db = _load_db()
-    raw = extract_text(file_path)
+    
+    local_path = s3_service.download_file(s3_key)
+    try:
+        raw = extract_text(local_path)
+    finally:
+        if os.path.exists(local_path):
+            os.remove(local_path)
     
     job = JobProfile(
         id=len(db["jobs"]) + 1,
-        title=os.path.basename(file_path),
+        title=os.path.basename(s3_key),
         skills=extract_jd_keywords(raw),
-        jobS3Key=file_path
+        jobS3Key=s3_key
     )
     db["jobs"].append(job.model_dump())
     _save_db(db)
     return job
+
 
 def run_matching() -> int:
     """Runs batch matching for all candidates vs all jobs. Returns count of matches."""
