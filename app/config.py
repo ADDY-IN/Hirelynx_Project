@@ -7,17 +7,27 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Hirelynx Resume Scorer"
     
     # Database Configuration
-    DB_PATH: str = "hirelynx_db.json"
+    DB_HOST: str = "localhost"
+    DB_PORT: str = "5432"
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = "password"
+    DB_NAME: str = "postgres"
+
+    @property
+    def SQLALCHEMY_DATABASE_URI(self) -> str:
+        import urllib.parse
+        encoded_password = urllib.parse.quote_plus(self.DB_PASSWORD)
+        return f"postgresql://{self.DB_USER}:{encoded_password}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
     
     # Scoring Weights
     SCORING_WEIGHT: float = 0.5
     
-    # S3 Configuration (Optional, for production fetch)
+    # S3 Configuration
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "us-east-1"
-    S3_BUCKET_NAME: str = "hirelynx-resumes"
+    AWS_S3_BUCKET_NAME: str = "hirelynx-resumes"
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 settings = Settings()

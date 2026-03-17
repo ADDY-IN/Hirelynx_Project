@@ -13,3 +13,5 @@ uvicorn
 python-multipart
 sentence-transformers
 torch
+sqlalchemy
+psycopg2-binary

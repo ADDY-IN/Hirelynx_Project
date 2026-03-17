@@ -2,6 +2,51 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON, ForeignKey, Enum as SQLEnum
+from sqlalchemy.orm import relationship
+from app.database import Base
+
+# --- SQLAlchemy Models (Database) ---
+
+class DBCandidate(Base):
+    __tablename__ = "candidates"
+    id = Column(Integer, primary_key=True, index=True)
+    personal_details = Column(JSON, nullable=True) # Map to PersonalDetails
+    education = Column(JSON, default=[]) # List of Education
+    work_experience = Column(JSON, default=[]) # List of WorkExperience
+    skills = Column(JSON, default=[]) # List of Skill objects
+    projects = Column(JSON, default=[]) # List of Project
+    resume_s3_key = Column(String, nullable=True)
+    resume_parse_status = Column(String, default="PENDING")
+    resume_parsed_json = Column(JSON, nullable=True)
+    resume_last_parsed_at = Column(DateTime, nullable=True)
+    is_profile_completed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class DBJob(Base):
+    __tablename__ = "jobs"
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+    skills = Column(JSON, default=[]) # List[str]
+    requirements = Column(JSON, nullable=True)
+    experience_years = Column(Float, default=0)
+    education = Column(JSON, default=[])
+    job_s3_key = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class DBMatch(Base):
+    __tablename__ = "matches"
+    id = Column(Integer, primary_key=True, index=True)
+    candidate_id = Column(Integer, ForeignKey("candidates.id"))
+    job_id = Column(Integer, ForeignKey("jobs.id"))
+    overall_score = Column(Float)
+    breakdown = Column(JSON, default={})
+    matched_skills = Column(JSON, default=[])
+    recommendation = Column(String)
+    status = Column(String, default="PENDING")
+
+# --- Pydantic Models (API) ---
 
 class ResumeParseStatus(str, Enum):
     PENDING = "PENDING"
@@ -50,7 +95,7 @@ class WorkExperience(BaseModel):
 
 class Skill(BaseModel):
     name: str
-    level: Optional[str] = None  # 'Beginner' | 'Intermediate' | 'Advanced'
+    level: Optional[str] = None
     yearsOfExperience: Optional[float] = None
 
 class Project(BaseModel):
@@ -74,49 +119,23 @@ class Capabilities(BaseModel):
     strengths: Optional[str] = Field(None, max_length=150)
     additionalDetailsS3Key: Optional[str] = None
 
-class GovernmentIdType(str, Enum):
-    PASSPORT = "PASSPORT"
-    DRIVER_LICENSE = "DRIVER_LICENSE"
-    PERMANENT_RESIDENT_CARD = "PERMANENT_RESIDENT_CARD"
-    WORK_PERMIT = "WORK_PERMIT"
-    STUDY_PERMIT = "STUDY_PERMIT"
-    SIN_CARD = "SIN_CARD"
-    PROVINCIAL_ID_CARD = "PROVINCIAL_ID_CARD"
-    OTHER = "OTHER"
-
-class GovernmentId(BaseModel):
-    idType: GovernmentIdType
-    frontImageS3Key: str
-    backImageS3Key: Optional[str] = None
-    expiryDate: Optional[str] = None
-    isConfirmed: bool
-    uploadedAt: Optional[datetime] = None
-
-class Reference(BaseModel):
-    name: str
-    title: Optional[str] = None
-    company: Optional[str] = None
-    email: Optional[str] = None
-
 class CandidateProfile(BaseModel):
     id: Optional[int] = None
     personalDetails: Optional[PersonalDetails] = None
-    governmentId: Optional[GovernmentId] = None
     education: List[Education] = []
     workExperience: List[WorkExperience] = []
     skills: List[Skill] = []
     projects: List[Project] = []
     certifications: List[Certificate] = []
-    references: List[Reference] = []
     capabilities: Optional[Capabilities] = None
     resumeS3Key: Optional[str] = None
     resumeParseStatus: Optional[ResumeParseStatus] = None
     resumeParsedJson: Optional[Any] = None
     resumeLastParsedAt: Optional[datetime] = None
     isProfileCompleted: bool = False
-    createdAt: Optional[datetime] = None
-    updatedAt: Optional[datetime] = None
-    deletedAt: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 class JobProfile(BaseModel):
     id: Optional[int] = None
@@ -126,15 +145,20 @@ class JobProfile(BaseModel):
     experienceYears: Optional[float] = 0
     education: List[str] = []
     jobS3Key: Optional[str] = None
-    createdAt: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 class MatchScore(BaseModel):
     id: Optional[int] = None
     candidateId: int
     jobId: int
     overallScore: float
-    breakdown: Dict[str, float] = {}  # {skills: number, exp: number, edu: number, summary: number}
+    breakdown: Dict[str, float] = {}
     matchedSkills: List[str] = []
     recommendation: str
-    status: str = 'PENDING' # 'PENDING'|'SHORTLISTED'|'REJECTED'
+    status: str = 'PENDING'
+
+    class Config:
+        from_attributes = True
 

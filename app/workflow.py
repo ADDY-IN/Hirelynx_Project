@@ -1,9 +1,9 @@
 import os
-import json
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from app.models import CandidateProfile, JobProfile, MatchScore, ResumeParseStatus
+from typing import List, Dict, Any, Optional, cast
+from sqlalchemy.orm import Session
+from app.models import DBCandidate, DBJob, DBMatch, CandidateProfile, JobProfile, ResumeParseStatus
 from app.utils import extract_text, clean_text, extract_jd_keywords
 from app.scoring import ScoringEngine
 from app.config import settings
@@ -11,33 +11,10 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 engine = ScoringEngine(weight=settings.SCORING_WEIGHT)
 
-# --- DB Layer (Robust Simulation) ---
-def _load_db() -> Dict[str, List[Any]]:
-    if os.path.exists(settings.DB_PATH):
-        try:
-            with open(settings.DB_PATH, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load DB: {e}")
-    return {"candidates": [], "jobs": [], "matches": []}
-
-def _save_db(data: Dict[str, Any]):
-    try:
-        db_dir = os.path.dirname(settings.DB_PATH)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-            
-        with open(settings.DB_PATH, "w") as f:
-            json.dump(data, f, indent=4, default=str)
-    except Exception as e:
-        logger.error(f"Failed to save DB: {e}")
-        logger.error(f"Failed to save DB: {e}")
-
 # --- Service Layer ---
 
-def parse_and_store_resume(s3_key: str) -> CandidateProfile:
+def parse_and_store_resume(db: Session, s3_key: str) -> DBCandidate:
     from app.s3_service import s3_service
-    db = _load_db()
     
     local_path = s3_service.download_file(s3_key)
     try:
@@ -46,20 +23,19 @@ def parse_and_store_resume(s3_key: str) -> CandidateProfile:
         if os.path.exists(local_path):
             os.remove(local_path)
     
-    profile = CandidateProfile(
-        id=len(db["candidates"]) + 1,
-        resumeS3Key=s3_key,
-        resumeParseStatus=ResumeParseStatus.PARSED,
-        resumeLastParsedAt=datetime.now(),
-        resumeParsedJson={"text": clean_text(raw)}
+    db_candidate = DBCandidate(
+        resume_s3_key=s3_key,
+        resume_parse_status=ResumeParseStatus.PARSED,
+        resume_last_parsed_at=datetime.utcnow(),
+        resume_parsed_json={"text": clean_text(raw)}
     )
-    db["candidates"].append(profile.model_dump())
-    _save_db(db)
-    return profile
+    db.add(db_candidate)
+    db.commit()
+    db.refresh(db_candidate)
+    return db_candidate
 
-def parse_and_store_jd(s3_key: str) -> JobProfile:
+def parse_and_store_jd(db: Session, s3_key: str) -> DBJob:
     from app.s3_service import s3_service
-    db = _load_db()
     
     local_path = s3_service.download_file(s3_key)
     try:
@@ -68,42 +44,78 @@ def parse_and_store_jd(s3_key: str) -> JobProfile:
         if os.path.exists(local_path):
             os.remove(local_path)
     
-    job = JobProfile(
-        id=len(db["jobs"]) + 1,
+    db_job = DBJob(
         title=os.path.basename(s3_key),
         skills=extract_jd_keywords(raw),
-        jobS3Key=s3_key
+        job_s3_key=s3_key
     )
-    db["jobs"].append(job.model_dump())
-    _save_db(db)
-    return job
-
+    db.add(db_job)
+    db.commit()
+    db.refresh(db_job)
+    return db_job
 
 def run_matching() -> int:
-    """Runs batch matching for all candidates vs all jobs. Returns count of matches."""
-    db = _load_db()
-    db["matches"] = []
-    count = 0
-    for c in db["candidates"]:
-        for j in db["jobs"]:
-            res = engine.score(c["resumeParsedJson"]["text"], j["title"], j["skills"])
-            match = MatchScore(
-                candidateId=c["id"], 
-                jobId=j["id"],
-                overallScore=res["score"], 
-                matchedSkills=res["matched_skills"],
-                recommendation=res["recommendation"]
-            )
-            db["matches"].append(match.model_dump())
-            count += 1
-    _save_db(db)
-    return count
+    """
+    Runs batch matching for all candidates vs all jobs. 
+    Thread-safe implementation: creates its own session.
+    """
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        candidates = db.query(DBCandidate).all()
+        jobs = db.query(DBJob).all()
+        
+        # Clear old matches
+        db.query(DBMatch).delete()
+        
+        count = 0
+        c: DBCandidate
+        for c in candidates:
+            parsed_json = c.resume_parsed_json
+            if not isinstance(parsed_json, dict) or "text" not in parsed_json:
+                continue
+                
+            resume_text = str(parsed_json["text"])
+            
+            j: DBJob
+            for j in jobs:
+                # Explicit casting to satisfy strict IDE linters
+                jd_description = str(j.title) if j.title is not None else ""
+                
+                # Ensure keywords is always a list of strings
+                raw_skills = j.skills
+                keywords: List[str] = []
+                if isinstance(raw_skills, list):
+                    keywords = [str(s) for s in raw_skills]
+                elif isinstance(raw_skills, str) and len(str(raw_skills)) > 0:
+                    keywords = [s.strip() for s in str(raw_skills).split(",")]
+                    
+                res = engine.score(resume_text, jd_description, keywords)
+                
+                # Extract IDs safely for match creation
+                c_id = int(cast(Any, c.id))
+                j_id = int(cast(Any, j.id))
+                
+                match = DBMatch(
+                    candidate_id=c_id, 
+                    job_id=j_id,
+                    overall_score=float(res["score"]), 
+                    matched_skills=res["matched_skills"],
+                    recommendation=str(res["recommendation"])
+                )
+                db.add(match)
+                count += 1
+        db.commit()
+        return count
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Batch matching failed: {e}")
+        return 0
+    finally:
+        db.close()
 
-def get_recommendations(target_id: int, for_candidate: bool = True) -> List[Dict[str, Any]]:
-    db = _load_db()
-    key = "candidateId" if for_candidate else "jobId"
-    matches = [m for m in db["matches"] if m[key] == target_id]
-    return sorted(matches, key=lambda x: x["overallScore"], reverse=True)
-
-
-
+def get_recommendations(db: Session, target_id: int, for_candidate: bool = True) -> List[DBMatch]:
+    if for_candidate:
+        return db.query(DBMatch).filter(cast(Any, DBMatch.candidate_id) == target_id).order_by(DBMatch.overall_score.desc()).all()
+    else:
+        return db.query(DBMatch).filter(cast(Any, DBMatch.job_id) == target_id).order_by(DBMatch.overall_score.desc()).all()

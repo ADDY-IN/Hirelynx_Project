@@ -16,7 +16,7 @@ class S3Service:
                 aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                 region_name=settings.AWS_REGION
             )
-            self.bucket_name = settings.S3_BUCKET_NAME
+            self.bucket_name = settings.AWS_S3_BUCKET_NAME
         except Exception as e:
             logger.error(f"Failed to initialize S3 client: {e}")
             self.s3_client = None

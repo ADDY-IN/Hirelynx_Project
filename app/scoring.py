@@ -21,13 +21,15 @@ class ScoringEngine:
             self.encoder = None
 
     def score(self, resume_text: str, jd_description: str, keywords: List[str]) -> Dict[str, Any]:
+        return self.score_with_embedding(resume_text, jd_description, None, keywords)
+
+    def score_with_embedding(self, resume_text: str, jd_description: str, query_embedding: Any, keywords: List[str]) -> Dict[str, Any]:
         # 1. Keyword Score (Fuzzy Partial Ratio)
         resume_lower = resume_text.lower()
         matched = []
         
         if keywords:
             for k in keywords:
-                # partial_ratio is excellent for finding keywords inside long text
                 if fuzz.partial_ratio(k.lower(), resume_lower) > 85:
                     matched.append(k)
                     
@@ -35,11 +37,18 @@ class ScoringEngine:
         
         # 2. Semantic Score (Sentence Embeddings)
         sem_score = 0.0
-        if self.encoder and resume_text and jd_description:
+        if self.encoder and resume_text:
             try:
-                embeddings = self.encoder.encode([resume_text, jd_description])
-                sim = cosine_similarity(np.array([embeddings[0]]), np.array([embeddings[1]]))[0][0]
-                sem_score = max(0.0, min(100.0, float(sim) * 100))
+                # Use pre-computed embedding if available, else compute it
+                resume_embedding = self.encoder.encode([resume_text])[0]
+                if query_embedding is None and jd_description:
+                    target_embedding = self.encoder.encode([jd_description])[0]
+                else:
+                    target_embedding = query_embedding
+                
+                if target_embedding is not None:
+                    sim = cosine_similarity(np.array([resume_embedding]), np.array([target_embedding]))[0][0]
+                    sem_score = max(0.0, min(100.0, float(sim) * 100))
             except Exception as e:
                 logger.error(f"Semantic scoring error: {e}")
 
