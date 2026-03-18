@@ -1,5 +1,5 @@
 Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 11676.67it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 3959.43it/s]
 [1mBertModel LOAD REPORT[0m from: sentence-transformers/all-MiniLM-L6-v2
 Key                     | Status     |  | 
 ------------------------+------------+--+-
@@ -7,18 +7,10 @@ embeddings.position_ids | UNEXPECTED |  |
 
 [3mNotes:
 - UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
-Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 10325.86it/s]
-[1mBertModel LOAD REPORT[0m from: sentence-transformers/all-MiniLM-L6-v2
-Key                     | Status     |  | 
-------------------------+------------+--+-
-embeddings.position_ids | UNEXPECTED |  | 
-
-[3mNotes:
-- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
-INFO:     Started server process [37915]
+INFO:     Started server process [48031]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:56077 - "GET /v1/admin/candidates/search?query=&limit=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56082 - "GET /v1/admin/candidates/search?query=Kunal&limit=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56182 - "POST /v1/admin/candidates/search?query=yashi HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62169 - "POST /v1/admin/candidates/search?query=react HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62174 - "GET /v1/admin/candidates/search?query=Yashi HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62191 - "POST /v1/admin/candidates/search?query=react HTTP/1.1" 200 OK
