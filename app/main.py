@@ -149,18 +149,19 @@ async def job_recs(
 
 # --- 6. CANDIDATE SEARCH (ADMIN) ---
 
+@app.get("/v1/admin/candidates/search")
 @app.post("/v1/admin/candidates/search")
 async def search_candidates(
     query: str = "",
-    user_id: Optional[int] = None,
     limit: int = Query(50, ge=1, le=100),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
-    """Semantic search for candidates by name, skill, or natural language query. Pass admin JWT as Bearer token."""
+    """Semantic search for candidates by name, skill, or natural language query. Supports GET/POST. Pass admin JWT as Bearer token."""
     try:
         _ = extract_user_id_from_token(credentials.credentials)
-        results = SearchService.search_candidates(db, query, user_id=user_id, limit=limit)
+        # Note: user_id is removed as the 'candidates' table schema doesn't have it.
+        results = SearchService.search_candidates(db, query, limit=limit)
         return {"results": results, "count": len(results)}
     except HTTPException:
         raise

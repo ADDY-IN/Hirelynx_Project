@@ -11,7 +11,7 @@ from app.database import Base
 class DBCandidate(Base):
     __tablename__ = "candidate_profiles"
     id = Column(Integer, primary_key=True, index=True)
-    userId = Column(Integer, nullable=False) # Link to users table, required by DB
+    userId = Column(Integer, nullable=True)
     personalDetails = Column(JSON, nullable=True) 
     education = Column(JSON, default=[]) 
     workExperience = Column(JSON, default=[]) 

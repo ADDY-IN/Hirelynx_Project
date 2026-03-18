@@ -1,139 +1,164 @@
 import re
 import logging
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from typing import List, Dict, Any, Optional
-from app.models import DBCandidate
 from app.scoring import ScoringEngine
 from app.config import settings
+from app.utils import encode_id
 
 logger = logging.getLogger(__name__)
 engine = ScoringEngine(weight=settings.SCORING_WEIGHT)
 
 class SearchService:
     @staticmethod
-    def parse_experience_from_query(query: str) -> float:
-        """Extracts numerical years of experience from a query string."""
-        match = re.search(r'(\d+)(?:\+|-|\s*to\s*|\s*years?)', query, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
-        match = re.search(r'(\d+)\s*(?:years?|yrs?)', query, re.IGNORECASE)
-        return float(match.group(1)) if match else 0.0
-
-    @staticmethod
     def search_candidates(db: Session, query: str, user_id: Optional[int] = None, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Optimized two-step semantic search for candidates.
-        Step 1: Fast ranking using minimal fields.
-        Step 2: Enrichment of top candidates with full profile data.
+        Search candidates by name, email, or skills.
+        Joins candidate_profiles with users table to get real name/email data.
         """
-        from app.utils import encode_id
-        from sqlalchemy.orm import load_only
-        
         query_low = query.lower().strip()
-        keywords = [k.strip() for k in query.replace(',', ' ').split() if len(k.strip()) > 3]
 
-        # Pre-encode query ONCE
-        query_embedding = None
-        if engine.encoder and len(query_low) > 3:
-            try:
-                query_embedding = engine.encoder.encode([query])[0]
-            except Exception:
-                pass
+        # -- SQL Join: candidate_profiles + users --
+        # We pull the key fields needed for search and display.
+        sql = text("""
+            SELECT
+                cp.id,
+                cp."userId",
+                u."email",
+                u."firstName",
+                u."lastName",
+                cp."personalDetails",
+                cp."skills",
+                cp."education",
+                cp."workExperience",
+                cp."projects",
+                cp."resumeParseStatus",
+                cp."resumeS3Key",
+                cp."resumeParsedJson"
+            FROM candidate_profiles cp
+            LEFT JOIN users u ON cp."userId" = u.id
+            ORDER BY cp.id DESC
+        """)
 
-        # Step 1: Fast Ranking (Fetch only needed fields)
-        search_query = db.query(DBCandidate).options(load_only(
-            DBCandidate.id, 
-            DBCandidate.userId, 
-            DBCandidate.personalDetails, 
-            DBCandidate.skills, 
-            DBCandidate.resumeParsedJson,
-            DBCandidate.resumeS3Key
-        ))
-        
-        if user_id:
-            candidates = search_query.filter(DBCandidate.userId == user_id).all()
-        else:
-            candidates = search_query.all()
-        
-        scored_results = []
-        for c in candidates:
-            # Fast in-memory name matching
-            name_boost = 0.0
-            if isinstance(c.personalDetails, dict):
-                first = (c.personalDetails.get("firstName") or "").lower()
-                last = (c.personalDetails.get("lastName") or "").lower()
-                if query_low in first or query_low in last:
-                    name_boost = 0.5
+        rows = db.execute(sql).fetchall()
 
-            # Extract candidate skills
-            c_skills = []
-            if isinstance(c.skills, list):
-                for s in c.skills:
+        results = []
+        for row in rows:
+            cid, user_id_val, email, first_name, last_name, personal_details, skills, education, work_exp, projects, parse_status, s3_key, parsed_json = row
+
+            # Build searchable text from available data
+            searchable_parts = []
+
+            # Name from users table
+            if first_name:
+                searchable_parts.append(str(first_name).lower())
+            if last_name:
+                searchable_parts.append(str(last_name).lower())
+            # Email
+            if email:
+                searchable_parts.append(str(email).lower())
+            # Personal details JSON
+            if personal_details and isinstance(personal_details, dict):
+                searchable_parts.extend([str(v).lower() for v in personal_details.values() if v])
+            # Skills JSON
+            skill_names = []
+            if skills and isinstance(skills, list):
+                for s in skills:
                     if isinstance(s, dict) and "name" in s:
-                        c_skills.append(str(s["name"]))
+                        skill_names.append(str(s["name"]).lower())
                     elif isinstance(s, str):
-                        c_skills.append(s)
-
+                        skill_names.append(s.lower())
+            searchable_parts.extend(skill_names)
+            # Resume text
             resume_text = ""
-            if c.resumeParsedJson and isinstance(c.resumeParsedJson, dict):
-                resume_text = c.resumeParsedJson.get("text", "") or ""
+            if parsed_json and isinstance(parsed_json, dict):
+                resume_text = parsed_json.get("text", "") or ""
 
-            # Skip if no content to score
-            if not resume_text and not name_boost:
+            searchable_str = " ".join(searchable_parts)
+
+            # -- Matching logic --
+            if not query_low:
+                # Empty query: return everyone
+                results.append({
+                    "candidateId": cid,
+                    "token": encode_id("CAND", cid),
+                    "email": email,
+                    "firstName": first_name,
+                    "lastName": last_name,
+                    "personalDetails": personal_details,
+                    "skills": skills,
+                    "education": education,
+                    "workExperience": work_exp,
+                    "projects": projects,
+                    "resumeParseStatus": parse_status,
+                    "resumeS3Key": s3_key,
+                    "score": 0.0,
+                    "matchedSkills": [],
+                    "recommendation": "All Candidates"
+                })
                 continue
 
-            try:
-                res = engine.score_with_embedding(
-                    resume_text=resume_text,
-                    jd_description=query,
-                    query_embedding=query_embedding,
-                    keywords=keywords,
-                    candidate_skills=c_skills
-                )
-                final_score = float(res["score"]) + name_boost
-            except Exception:
-                final_score = name_boost
-                res = {"matched_skills": [], "recommendation": "Unknown"}
-            
-            scored_results.append({
-                "id": c.id,
-                "score": round(min(1.0, final_score / 100.0), 4),
-                "recommendation": res["recommendation"],
-                "matchedSkills": res["matched_skills"]
-            })
-            
-        # Sort and take top K for enrichment
-        ranked_results = sorted(scored_results, key=lambda x: x["score"], reverse=True)[:limit]
-        top_ids = [r["id"] for r in ranked_results]
+            # Check direct text match
+            score = 0.0
+            matched_skills = []
+            query_words = query_low.split()
 
-        if not top_ids:
-            return []
+            # Name / email / skill match boost
+            if query_low in searchable_str:
+                score += 60.0
+            else:
+                # partial word matching
+                for word in query_words:
+                    if word in searchable_str:
+                        score += 20.0
 
-        # Step 2: Enrichment (Fetch full data for top candidates)
-        full_profiles = db.query(DBCandidate).filter(DBCandidate.id.in_(top_ids)).all()
-        profile_map = {p.id: p for p in full_profiles}
+            # Skill-specific matching
+            for sn in skill_names:
+                if query_low in sn or any(w in sn for w in query_words):
+                    score += 15.0
+                    matched_skills.append(sn)
 
-        # Step 3: Data Mapping
-        enriched_results = []
-        for r in ranked_results:
-            p = profile_map.get(r["id"])
-            if not p:
-                continue
-                
-            enriched_results.append({
-                "candidateId": p.id,
-                "userId": p.userId,
-                "personalDetails": p.personalDetails,
-                "education": p.education,
-                "workExperience": p.workExperience,
-                "skills": p.skills,
-                "projects": p.projects,
-                "candidateToken": encode_id("CAND", p.id),
-                "score": r["score"],
-                "recommendation": r["recommendation"],
-                "matchedSkills": r["matchedSkills"],
-                "resumeS3Key": p.resumeS3Key,
-                "resumeParseStatus": p.resumeParseStatus
-            })
+            # Semantic / keyword match against resume text (if available)
+            if resume_text and score < 10.0:
+                try:
+                    keywords = [k for k in query_low.replace(',', ' ').split() if len(k) > 2]
+                    query_embedding = None
+                    if engine.encoder:
+                        query_embedding = engine.encoder.encode([query])[0]
+                    res = engine.score_with_embedding(
+                        resume_text=resume_text,
+                        jd_description=query,
+                        query_embedding=query_embedding,
+                        keywords=keywords,
+                        candidate_skills=[s for s in skill_names]
+                    )
+                    score = max(score, float(res["score"]))
+                    matched_skills = matched_skills or res["matched_skills"]
+                except Exception:
+                    pass
 
-        return enriched_results
+            if score > 0:
+                full_name = f"{first_name or ''} {last_name or ''}".strip()
+                results.append({
+                    "candidateId": cid,
+                    "token": encode_id("CAND", cid),
+                    "email": email,
+                    "firstName": first_name,
+                    "lastName": last_name,
+                    "fullName": full_name if full_name else None,
+                    "personalDetails": personal_details,
+                    "skills": skills,
+                    "education": education,
+                    "workExperience": work_exp,
+                    "projects": projects,
+                    "resumeParseStatus": parse_status,
+                    "resumeS3Key": s3_key,
+                    "score": round(min(1.0, score / 100.0), 4),
+                    "matchedSkills": matched_skills,
+                    "recommendation": "Strong Match" if score >= 60 else "Partial Match"
+                })
+
+        # Sort by score descending, limit results
+        results = sorted(results, key=lambda x: x["score"], reverse=True)[:limit]
+        return results

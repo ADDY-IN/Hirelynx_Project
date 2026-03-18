@@ -1,5 +1,5 @@
 Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 8918.52it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 11676.67it/s]
 [1mBertModel LOAD REPORT[0m from: sentence-transformers/all-MiniLM-L6-v2
 Key                     | Status     |  | 
 ------------------------+------------+--+-
@@ -7,7 +7,7 @@ embeddings.position_ids | UNEXPECTED |  |
 
 [3mNotes:
 - UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
-Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 22701.70it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 10325.86it/s]
 [1mBertModel LOAD REPORT[0m from: sentence-transformers/all-MiniLM-L6-v2
 Key                     | Status     |  | 
 ------------------------+------------+--+-
@@ -15,17 +15,10 @@ embeddings.position_ids | UNEXPECTED |  |
 
 [3mNotes:
 - UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
-INFO:     Started server process [64863]
+INFO:     Started server process [37915]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:53978 - "POST /v1/parser/resume?s3_key=resumes%2Fkunal-sharma%2Fresume-82-1773754232547&user_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjgyLCJlbWFpbCI6Imt1bmFsLnNoYXJtYTEyQHlvcG1haWwuY29tIiwicm9sZSI6IkNBTkRJREFURSIsImlhdCI6MTc3MzgxNjcxMywiZXhwIjoxNzczOTg5NTEzfQ.EdZRqFQpGHSczqULfM9gMWxEtmWGbDG5XUyBJLzyeXc HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58759 - "POST /v1/recruiter/jobs/summarize?job_id=1 HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:59159 - "GET /v1/admin/candidates/search?query=kunal%20sharma&admin_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImVtYWlsIjoiYWRtaW4xQHlvcG1haWwuY29tIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzczODMzODUwLCJleHAiOjE3NzQwMDY2NTB9.rpPd1pQ0dRv27cxzPZdsENsDqFYCpiL737WXcTMDDPc HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:59172 - "GET /v1/admin/candidates/search?query=kunalsharma%40gmail.com&admin_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImVtYWlsIjoiYWRtaW4xQHlvcG1haWwuY29tIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzczODMzODUwLCJleHAiOjE3NzQwMDY2NTB9.rpPd1pQ0dRv27cxzPZdsENsDqFYCpiL737WXcTMDDPc HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:59940 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59940 - "GET /openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60153 - "GET /v1/admin/candidates/search?query=kunal%20sharma&= HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:60153 - "GET /v1/admin/candidates/search?query=kunal%20sharma&= HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:63894 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63894 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56077 - "GET /v1/admin/candidates/search?query=&limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56082 - "GET /v1/admin/candidates/search?query=Kunal&limit=10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56182 - "POST /v1/admin/candidates/search?query=yashi HTTP/1.1" 200 OK
