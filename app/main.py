@@ -4,7 +4,7 @@ from sqlalchemy import text as sql_text
 from typing import List, Optional
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from app.models import CandidateProfile, MatchScore, DBCandidate, DBJob
+from app.models import CandidateProfile, JobProfile, MatchScore, DBCandidate, DBJob
 from app.workflow import parse_only, get_recommendations, score_pair, generate_job_summary_from_text, match_job_against_all_candidates
 from app.database import get_db
 from app.config import settings
@@ -151,14 +151,16 @@ async def job_recs(
 
 @app.post("/v1/admin/candidates/search")
 async def search_candidates(
-    query: str,
+    query: str = "",
+    user_id: Optional[int] = None,
+    limit: int = Query(50, ge=1, le=100),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Semantic search for candidates by name, skill, or natural language query. Pass admin JWT as Bearer token."""
     try:
         _ = extract_user_id_from_token(credentials.credentials)
-        results = SearchService.search_candidates(db, query)
+        results = SearchService.search_candidates(db, query, user_id=user_id, limit=limit)
         return {"results": results, "count": len(results)}
     except HTTPException:
         raise
@@ -186,40 +188,36 @@ async def candidate_summary(
 
 @app.post("/v1/recruiter/jobs/summarize")
 async def summarize_and_update_job(
-    job_id: int,
+    job_data: JobProfile,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """
-    Accepts job_id as a query parameter.
-    Fetches the job via raw SQL (avoids DB schema mismatch errors),
-    generates an AI summary, saves it, and returns it.
+    Accepts job details in the request body and a job token in the Bearer header.
+    Generates an AI summary based on the provided payload, saves it to the DB 
+    for the job identified by the token, and returns the summary.
     """
     try:
-        # Targeted SQL to avoid crash on non-existent columns (e.g. education)
-        row = db.execute(
-            sql_text("SELECT id, title, description, responsibilities FROM jobs WHERE id = :jid"),
-            {"jid": job_id}
-        ).fetchone()
+        token = credentials.credentials
+        try:
+            job_id = decode_id(token)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid token provided in the Bearer header.")
 
-        if not row:
-            raise HTTPException(status_code=404, detail="Job not found.")
-
-        # Build raw text for summarization
+        # Build raw text for summarization from the provided payload
         raw_text_parts = []
-        if row.description:
-            raw_text_parts.append(str(row.description))
-        if row.responsibilities:
-            resp = row.responsibilities
-            if isinstance(resp, list):
-                raw_text_parts.append("Responsibilities: " + ", ".join([str(r) for r in resp]))
-            elif isinstance(resp, str):
-                raw_text_parts.append("Responsibilities: " + resp)
+        if job_data.description:
+            raw_text_parts.append(str(job_data.description))
+        
+        if job_data.responsibilities:
+            raw_text_parts.append("Responsibilities: " + ", ".join([str(r) for r in job_data.responsibilities]))
+            
         if not raw_text_parts:
-            raw_text_parts.append(str(row.title))
+            raw_text_parts.append(str(job_data.title))
 
         generated_summary = generate_job_summary_from_text("\n\n".join(raw_text_parts))
 
-        # Persist summary
+        # Persist summary to DB using raw SQL to ensure stability across schema variations
         db.execute(
             sql_text("UPDATE jobs SET summary = :summary WHERE id = :jid"),
             {"summary": generated_summary, "jid": job_id}

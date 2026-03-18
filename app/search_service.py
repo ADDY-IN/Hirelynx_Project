@@ -1,7 +1,7 @@
 import re
 import logging
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.models import DBCandidate
 from app.scoring import ScoringEngine
 from app.config import settings
@@ -20,14 +20,19 @@ class SearchService:
         return float(match.group(1)) if match else 0.0
 
     @staticmethod
-    def search_candidates(db: Session, query: str) -> List[Dict[str, Any]]:
-        """Fast semantic search for candidates based on a text query."""
-        from app.utils import encode_id, clean_keywords
+    def search_candidates(db: Session, query: str, user_id: Optional[int] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Optimized two-step semantic search for candidates.
+        Step 1: Fast ranking using minimal fields.
+        Step 2: Enrichment of top candidates with full profile data.
+        """
+        from app.utils import encode_id
+        from sqlalchemy.orm import load_only
         
         query_low = query.lower().strip()
         keywords = [k.strip() for k in query.replace(',', ' ').split() if len(k.strip()) > 3]
 
-        # Pre-encode query ONCE (not per candidate)
+        # Pre-encode query ONCE
         query_embedding = None
         if engine.encoder and len(query_low) > 3:
             try:
@@ -35,10 +40,22 @@ class SearchService:
             except Exception:
                 pass
 
-        # Load all candidates from ORM
-        candidates = db.query(DBCandidate).all()
+        # Step 1: Fast Ranking (Fetch only needed fields)
+        search_query = db.query(DBCandidate).options(load_only(
+            DBCandidate.id, 
+            DBCandidate.userId, 
+            DBCandidate.personalDetails, 
+            DBCandidate.skills, 
+            DBCandidate.resumeParsedJson,
+            DBCandidate.resumeS3Key
+        ))
         
-        results = []
+        if user_id:
+            candidates = search_query.filter(DBCandidate.userId == user_id).all()
+        else:
+            candidates = search_query.all()
+        
+        scored_results = []
         for c in candidates:
             # Fast in-memory name matching
             name_boost = 0.0
@@ -48,7 +65,7 @@ class SearchService:
                 if query_low in first or query_low in last:
                     name_boost = 0.5
 
-            # Extract candidate data
+            # Extract candidate skills
             c_skills = []
             if isinstance(c.skills, list):
                 for s in c.skills:
@@ -61,7 +78,7 @@ class SearchService:
             if c.resumeParsedJson and isinstance(c.resumeParsedJson, dict):
                 resume_text = c.resumeParsedJson.get("text", "") or ""
 
-            # Fast keyword check (skip heavy embedding if no resume text)
+            # Skip if no content to score
             if not resume_text and not name_boost:
                 continue
 
@@ -69,7 +86,7 @@ class SearchService:
                 res = engine.score_with_embedding(
                     resume_text=resume_text,
                     jd_description=query,
-                    query_embedding=query_embedding,  # pre-computed, not re-computed per candidate
+                    query_embedding=query_embedding,
                     keywords=keywords,
                     candidate_skills=c_skills
                 )
@@ -78,13 +95,45 @@ class SearchService:
                 final_score = name_boost
                 res = {"matched_skills": [], "recommendation": "Unknown"}
             
-            results.append({
-                "candidateId": c.id,
-                "candidateToken": encode_id("CAND", c.id),
+            scored_results.append({
+                "id": c.id,
                 "score": round(min(1.0, final_score / 100.0), 4),
                 "recommendation": res["recommendation"],
-                "matchedSkills": res["matched_skills"],
-                "resumeS3Key": c.resumeS3Key
+                "matchedSkills": res["matched_skills"]
             })
             
-        return sorted(results, key=lambda x: x["score"], reverse=True)
+        # Sort and take top K for enrichment
+        ranked_results = sorted(scored_results, key=lambda x: x["score"], reverse=True)[:limit]
+        top_ids = [r["id"] for r in ranked_results]
+
+        if not top_ids:
+            return []
+
+        # Step 2: Enrichment (Fetch full data for top candidates)
+        full_profiles = db.query(DBCandidate).filter(DBCandidate.id.in_(top_ids)).all()
+        profile_map = {p.id: p for p in full_profiles}
+
+        # Step 3: Data Mapping
+        enriched_results = []
+        for r in ranked_results:
+            p = profile_map.get(r["id"])
+            if not p:
+                continue
+                
+            enriched_results.append({
+                "candidateId": p.id,
+                "userId": p.userId,
+                "personalDetails": p.personalDetails,
+                "education": p.education,
+                "workExperience": p.workExperience,
+                "skills": p.skills,
+                "projects": p.projects,
+                "candidateToken": encode_id("CAND", p.id),
+                "score": r["score"],
+                "recommendation": r["recommendation"],
+                "matchedSkills": r["matchedSkills"],
+                "resumeS3Key": p.resumeS3Key,
+                "resumeParseStatus": p.resumeParseStatus
+            })
+
+        return enriched_results
