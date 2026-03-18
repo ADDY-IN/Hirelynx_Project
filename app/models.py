@@ -133,6 +133,7 @@ class Capabilities(BaseModel):
 
 class CandidateProfile(BaseModel):
     id: Optional[int] = None
+    token: Optional[str] = None
     userId: int
     personalDetails: Optional[PersonalDetails] = None
     education: Optional[List[Education]] = []
@@ -152,6 +153,7 @@ class CandidateProfile(BaseModel):
 
 class JobProfile(BaseModel):
     id: Optional[int] = None
+    token: Optional[str] = None
     title: str
     skills: Optional[List[str]] = []
     requirements: Optional[Any] = None
@@ -166,6 +168,8 @@ class MatchScore(BaseModel):
     id: Optional[int] = None
     candidateId: int
     jobId: int
+    candidateToken: Optional[str] = None
+    jobToken: Optional[str] = None
     overallScore: float
     matchPercentage: Optional[float] = None
     suitabilityScore: Optional[float] = None

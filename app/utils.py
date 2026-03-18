@@ -144,31 +144,53 @@ def tokenize_text(text: str) -> List[str]:
     """
     Convert text into unique lowercase tokens.
     """
+    # The provided instruction for tokenize_text was incomplete and syntactically incorrect.
+    # Retaining the original correct implementation.
     return list(set(text.split()))
+
+# --- Token Management ---
+import base64
+
+def encode_id(prefix: str, id_val: int) -> str:
+    """Encodes an integer ID into a safe string token."""
+    if not id_val:
+        return ""
+    raw = f"{prefix}-{id_val}"
+    # urlsafe base64 without padding
+    return base64.urlsafe_b64encode(raw.encode()).decode('utf-8').rstrip('=')
+
+def decode_id(token: str) -> int:
+    """Decodes a string token back to an integer ID."""
+    if not token:
+        raise ValueError("Token is empty")
+    if token.isdigit():
+        return int(token) # Backward compatibility for raw IDs
+        
+    try:
+        padding = 4 - (len(token) % 4)
+        if padding < 4:
+            token += '=' * padding
+        raw = base64.urlsafe_b64decode(token.encode('utf-8')).decode('utf-8')
+        return int(raw.split('-')[1])
+    except Exception:
+        raise ValueError(f"Invalid token format: {token}")
 
 # --- JD Keyword Processing ---
 
 def extract_jd_keywords(description: str) -> List[str]:
     """
-    Extract meaningful keywords/phrases from JD.
-    Keeps consecutive non-stopwords as phrases (N-grams) for better semantic matching.
+    Extract meaningful keywords/phrases from JD using the predefined SKILL_DB.
     """
-    cleaned = clean_text(description)
-    tokens = cleaned.split()
+    from app.parser import ResumeParser
     
-    keywords = set()
-    current_phrase = []
+    cleaned = clean_text(description).lower()
     
-    for token in tokens:
-        if token in STOPWORDS or len(token) <= 2:
-            if current_phrase:
-                keywords.add(" ".join(current_phrase))
-                current_phrase = []
-        else:
-            current_phrase.append(token)
-            keywords.add(token) # also store the single word
+    found_skills = set()
+    for skill in ResumeParser.SKILL_DB:
+        # User requested uppercase skills, so we search dynamically
+        import re
+        pattern = rf'(?i)\b{re.escape(skill)}\b'
+        if re.search(pattern, cleaned):
+            found_skills.add(skill.upper())
             
-    if current_phrase:
-        keywords.add(" ".join(current_phrase))
-        
-    return list(set([k for k in keywords if len(k) > 2]))
+    return sorted(list(found_skills))

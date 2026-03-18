@@ -22,6 +22,8 @@ class SearchService:
     @staticmethod
     def search_candidates(db: Session, query: str) -> List[Dict[str, Any]]:
         """Semantic search for candidates based on a text query."""
+        from app.utils import encode_id
+        
         query_embedding = None
         if engine.encoder:
             query_embedding = engine.encoder.encode([query])[0]
@@ -54,6 +56,7 @@ class SearchService:
             
             results.append({
                 "candidateId": c.id,
+                "candidateToken": encode_id("CAND", c.id),
                 "score": res["score"],
                 "recommendation": res["recommendation"],
                 "matchedSkills": res["matched_skills"],
@@ -65,6 +68,8 @@ class SearchService:
     @staticmethod
     def search_jobs(db: Session, query: str) -> List[Dict[str, Any]]:
         """Semantic search for jobs based on a text query (for candidates)."""
+        from app.utils import encode_id
+        
         query_embedding = None
         if engine.encoder:
             query_embedding = engine.encoder.encode([query])[0]
@@ -93,6 +98,7 @@ class SearchService:
             
             results.append({
                 "jobId": j.id,
+                "jobToken": encode_id("JOB", j.id),
                 "title": j.title,
                 "score": res["score"],
                 "matchedSkills": res["matched_skills"],
