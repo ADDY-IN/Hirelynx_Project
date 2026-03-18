@@ -31,6 +31,7 @@ class DBJob(Base):
     title = Column(String, index=True, nullable=False)
     requiredSkills = Column(JSON, default=[]) 
     description = Column(String, nullable=False) 
+    summary = Column(String, nullable=True)
     companyName = Column(String, default="Unknown", nullable=False)
     location = Column(String, default="Unknown", nullable=False)
     employmentType = Column(String, default="FULL_TIME", nullable=False)
@@ -38,6 +39,7 @@ class DBJob(Base):
     experienceMin = Column(Float, default=0)
     experienceMax = Column(Float, nullable=True)
     education = Column(JSON, default=[])
+    responsibilities = Column(JSON, default=[])
     job_s3_key = Column(String, nullable=True)
     applicationsCount = Column(Integer, default=0, nullable=False)
     isRemote = Column(Boolean, default=False, nullable=False)
@@ -52,6 +54,7 @@ class DBMatch(Base):
     id = Column(Integer, primary_key=True, index=True)
     candidateId = Column(Integer, ForeignKey("candidate_profiles.id"))
     jobId = Column(Integer, ForeignKey("jobs.id"))
+    applicationId = Column(Integer, nullable=True) # NEW: link to the specific application
     overallScore = Column(Float)
     breakdown = Column(JSON, default={})
     matchedSkills = Column(JSON, default=[])
@@ -80,10 +83,14 @@ class EmploymentType(str, Enum):
     FREELANCE = "FREELANCE"
 
 class PersonalDetails(BaseModel):
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
     phone: Optional[str] = None
-    location: Optional[str] = None
+    location: Optional[str] = None # Legacy/General
+    city: Optional[str] = None
+    province: Optional[str] = None
     dateOfBirth: Optional[str] = None
-    gender: Optional[Gender] = None
+    gender: Optional[str] = None # Changed from Enum to str for flexible parsing
     openToRelocate: Optional[bool] = None
 
 class Education(BaseModel):
@@ -97,10 +104,11 @@ class Education(BaseModel):
 
 class WorkExperience(BaseModel):
     companyName: Optional[str] = None
+    role: Optional[str] = None
     jobTitle: Optional[str] = None
     location: Optional[str] = None
     employmentType: Optional[EmploymentType] = None
-    startDate: str
+    startDate: Optional[str] = None
     endDate: Optional[str] = None
     currentlyWorking: Optional[bool] = None
     responsibilities: List[str] = []
@@ -134,7 +142,7 @@ class Capabilities(BaseModel):
 class CandidateProfile(BaseModel):
     id: Optional[int] = None
     token: Optional[str] = None
-    userId: int
+    userId: Optional[int] = None
     personalDetails: Optional[PersonalDetails] = None
     education: Optional[List[Education]] = []
     workExperience: Optional[List[WorkExperience]] = []
@@ -151,18 +159,44 @@ class CandidateProfile(BaseModel):
     class Config:
         from_attributes = True
 
+class ScreeningQuestion(BaseModel):
+    id: str
+    question: str
+    type: str
+
 class JobProfile(BaseModel):
     id: Optional[int] = None
-    token: Optional[str] = None
     title: str
+    description: Optional[str] = None
+    summary: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None
+    employmentType: Optional[str] = None
+    experienceLevel: Optional[str] = None
+    experienceMin: Optional[float] = None
+    experienceMax: Optional[float] = None
+    compensationType: Optional[str] = None
+    salaryMin: Optional[float] = None
+    salaryMax: Optional[float] = None
+    currency: Optional[str] = None
+    responsibilities: Optional[List[str]] = []
+    reportingTo: Optional[str] = None
+    workSchedule: Optional[str] = None
+    requiredSkills: Optional[List[str]] = []
+    requiresWorkAuthorization: Optional[bool] = None
+    openToInternationalCandidates: Optional[bool] = None
+    screeningQuestions: Optional[List[ScreeningQuestion]] = []
+    isRemote: Optional[bool] = None
+    expiresAt: Optional[str] = None
+    
+    # legacy fields just in case
+    token: Optional[str] = None
     skills: Optional[List[str]] = []
-    requirements: Optional[Any] = None
-    experienceYears: Optional[float] = 0
-    education: Optional[List[str]] = []
     jobS3Key: Optional[str] = None
 
     class Config:
         from_attributes = True
+        extra = "allow"
 
 class MatchScore(BaseModel):
     id: Optional[int] = None
@@ -170,6 +204,7 @@ class MatchScore(BaseModel):
     jobId: int
     candidateToken: Optional[str] = None
     jobToken: Optional[str] = None
+    applicationId: Optional[int] = None
     overallScore: float
     matchPercentage: Optional[float] = None
     suitabilityScore: Optional[float] = None

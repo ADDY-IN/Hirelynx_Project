@@ -141,15 +141,12 @@ def clean_keywords(words: List[str]) -> List[str]:
     return clean
 
 def tokenize_text(text: str) -> List[str]:
-    """
-    Convert text into unique lowercase tokens.
-    """
-    # The provided instruction for tokenize_text was incomplete and syntactically incorrect.
-    # Retaining the original correct implementation.
-    return list(set(text.split()))
+    """Convert text into unique lowercase tokens."""
+    return list(set(text.lower().split()))
 
 # --- Token Management ---
 import base64
+import json
 
 def encode_id(prefix: str, id_val: int) -> str:
     """Encodes an integer ID into a safe string token."""
@@ -163,7 +160,7 @@ def decode_id(token: str) -> int:
     """Decodes a string token back to an integer ID."""
     if not token:
         raise ValueError("Token is empty")
-    if token.isdigit():
+    if str(token).isdigit():
         return int(token) # Backward compatibility for raw IDs
         
     try:
@@ -174,6 +171,43 @@ def decode_id(token: str) -> int:
         return int(raw.split('-')[1])
     except Exception:
         raise ValueError(f"Invalid token format: {token}")
+
+def extract_user_id_from_token(token: str) -> int:
+    """
+    Decodes a JWT auth token payload and extracts the user ID.
+    Does not verify signatures (assumes API Gateway or frontend handles auth verification),
+    just extracts the 'userId', 'id', or 'sub' from the base64-encoded payload.
+    """
+    if not token:
+        raise ValueError("Token is missing")
+    
+    # If it's just a raw number, fallback for backward compatibility
+    if str(token).isdigit():
+        return int(token)
+        
+    try:
+        # JWTs have format: header.payload.signature
+        parts = token.split('.')
+        if len(parts) >= 2:
+            payload_b64 = parts[1]
+            # Add padding
+            padding = 4 - (len(payload_b64) % 4)
+            if padding < 4:
+                payload_b64 += '=' * padding
+            
+            payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+            payload = json.loads(payload_json)
+            
+            if "userId" in payload:
+                return int(payload["userId"])
+            elif "id" in payload:
+                return int(payload["id"])
+            elif "sub" in payload:
+                return int(payload["sub"])
+                
+        raise ValueError("Could not find user ID field in JWT payload")
+    except Exception as e:
+        raise ValueError(f"Invalid token format: {str(e)}")
 
 # --- JD Keyword Processing ---
 

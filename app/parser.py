@@ -57,10 +57,39 @@ class ResumeParser:
         return match.group(0) if match else None
 
     @staticmethod
-    def extract_location(text: str) -> Optional[str]:
-        # User requested specific location regex
-        match = re.search(r"(ghaziabad|delhi|mumbai|bangalore|noida|gurgaon)[, ]*(up|india|haryana|maharashtra)?", text, re.I)
-        return match.group(0) if match else None
+    def extract_name(text: str) -> Dict[str, str]:
+        """Extract first and last name from the first few lines."""
+        all_lines = text.split('\n')
+        lines = all_lines[:10] if len(all_lines) >= 10 else all_lines
+        for line in lines:
+            line = line.strip()
+            # Basic heuristic: 2-3 words, no numbers, often at the start
+            if 3 < len(line) < 30 and not re.search(r'\d', line):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return {"firstName": parts[0], "lastName": " ".join(parts[1:])}
+        return {"firstName": "", "lastName": ""}
+
+    @staticmethod
+    def extract_location(text: str) -> Dict[str, str]:
+        """Extract city and province/state."""
+        # Simple list for Canada/India as requested in screens
+        provinces = ["ontario", "bc", "quebec", "alberta", "up", "delhi", "haryana", "maharashtra", "karnataka"]
+        cities = ["toronto", "vancouver", "ottawa", "ghaziabad", "noida", "delhi", "mumbai", "bangalore", "gurgaon"]
+        
+        found_city = ""
+        found_province = ""
+        
+        text_low = text.lower()
+        for city in cities:
+            if re.search(rf'\b{re.escape(city)}\b', text_low):
+                found_city = city.capitalize()
+                break
+        for prov in provinces:
+            if re.search(rf'\b{re.escape(prov)}\b', text_low):
+                found_province = prov.upper()
+                break
+        return {"city": found_city, "province": found_province}
 
     @staticmethod
     def extract_skills(text: str) -> List[Skill]:
@@ -115,9 +144,10 @@ class ResumeParser:
         sections = ResumeParser.split_sections(cleaned)
         
         # 3. Extract Fields
-        email = ResumeParser.extract_email(raw_text) # Use raw for email/phone to avoid too much cleaning
+        name_info = ResumeParser.extract_name(raw_text)
+        email = ResumeParser.extract_email(raw_text)
         phone = ResumeParser.extract_phone(raw_text)
-        location = ResumeParser.extract_location(raw_text)
+        loc_info = ResumeParser.extract_location(raw_text)
         
         # Skills from full text for better coverage
         skills = ResumeParser.extract_skills(cleaned)
@@ -125,34 +155,30 @@ class ResumeParser:
         # Education from its specific section
         education = ResumeParser.extract_education(sections.get("education", ""))
         
-        # Experience (Level 2: Basic segmentation for now)
+        # Experience
         exp_text = str(sections.get("experience", ""))
         experience = []
         if exp_text:
+            # Try to grab common fields
             experience.append(WorkExperience(
-                companyName="Extracted from History",
+                companyName="Detected from History",
+                role="Professional Experience",
                 startDate="N/A",
-                responsibilities=[exp_text[:500] + "..."] # Capture snippet
+                responsibilities=[s.strip() for s in exp_text.split('.') if len(s.strip()) > 10][:5]
             ))
             
-        # Projects
-        proj_text = str(sections.get("projects", ""))
-        projects = []
-        if proj_text:
-            projects.append(Project(
-                title="Extracted Project",
-                summary=proj_text[:500] + "..."
-            ))
-
         return {
             "personalDetails": PersonalDetails(
+                firstName=name_info["firstName"],
+                lastName=name_info["lastName"],
                 phone=phone,
-                location=location
+                location=loc_info["city"], # Mapping to 'city' or general location
+                city=loc_info["city"],
+                province=loc_info["province"]
             ).model_dump(),
             "skills": [s.model_dump() for s in skills],
             "education": [e.model_dump() for e in education],
             "workExperience": [w.model_dump() for w in experience],
-            "projects": [p.model_dump() for p in projects],
             "email": email 
         }
 

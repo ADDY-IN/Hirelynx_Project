@@ -1,5 +1,6 @@
 import re
 import logging
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from app.models import DBCandidate, DBJob
@@ -24,16 +25,32 @@ class SearchService:
         """Semantic search for candidates based on a text query."""
         from app.utils import encode_id
         
+        query_low = query.lower().strip()
+
+        # 2. Semantic query prep
         query_embedding = None
-        if engine.encoder:
-            query_embedding = engine.encoder.encode([query])[0]
+        if engine.encoder and len(query_low) > 3:
+            try:
+                query_embedding = engine.encoder.encode([query])[0]
+            except Exception:
+                pass
             
         keywords = [k.strip() for k in query.replace(',', ' ').split() if len(k) > 3]
+        
+        # Fetch all candidates via ORM (safe, no transaction issues)
         candidates = db.query(DBCandidate).all()
         
         results = []
         for c in candidates:
-            # Extract skills for structured matching
+            # 1. In-memory name matching (avoids DB transaction issues)
+            name_boost = 0.0
+            if isinstance(c.personalDetails, dict):
+                first = (c.personalDetails.get("firstName") or "").lower()
+                last = (c.personalDetails.get("lastName") or "").lower()
+                if query_low in first or query_low in last:
+                    name_boost = 0.5
+
+            
             c_skills = []
             if isinstance(c.skills, list):
                 for s in c.skills:
@@ -54,55 +71,15 @@ class SearchService:
                 candidate_skills=c_skills
             )
             
+            final_score = float(res["score"]) + name_boost
+            
             results.append({
                 "candidateId": c.id,
                 "candidateToken": encode_id("CAND", c.id),
-                "score": res["score"],
+                "score": round(float(min(1.0, final_score)), 4),
                 "recommendation": res["recommendation"],
                 "matchedSkills": res["matched_skills"],
                 "resumeS3Key": c.resumeS3Key
-            })
-            
-        return sorted(results, key=lambda x: x["score"], reverse=True)
-
-    @staticmethod
-    def search_jobs(db: Session, query: str) -> List[Dict[str, Any]]:
-        """Semantic search for jobs based on a text query (for candidates)."""
-        from app.utils import encode_id
-        
-        query_embedding = None
-        if engine.encoder:
-            query_embedding = engine.encoder.encode([query])[0]
-            
-        keywords = [k.strip() for k in query.replace(',', ' ').split() if len(k) > 3]
-        jobs = db.query(DBJob).all()
-        
-        results = []
-        for j in jobs:
-            # JD description or title
-            jd_text = str(j.description) if j.description else str(j.title)
-            
-            # Extract job skills for structured matching if available
-            j_skills = []
-            if hasattr(j, 'requiredSkills') and isinstance(j.requiredSkills, list):
-                j_skills = [str(s) for s in j.requiredSkills]
-            
-            # Use ScoringEngine to match JD against the query
-            res = engine.score_with_embedding(
-                resume_text=jd_text, # The text being searched
-                jd_description=query, # The search query
-                query_embedding=query_embedding,
-                keywords=keywords,
-                candidate_skills=j_skills # Using job skills as "candidate skills" for structured matching
-            )
-            
-            results.append({
-                "jobId": j.id,
-                "jobToken": encode_id("JOB", j.id),
-                "title": j.title,
-                "score": res["score"],
-                "matchedSkills": res["matched_skills"],
-                "jobS3Key": j.job_s3_key
             })
             
         return sorted(results, key=lambda x: x["score"], reverse=True)
