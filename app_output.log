@@ -20,3 +20,10 @@ INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 INFO:     127.0.0.1:53978 - "POST /v1/parser/resume?s3_key=resumes%2Fkunal-sharma%2Fresume-82-1773754232547&user_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjgyLCJlbWFpbCI6Imt1bmFsLnNoYXJtYTEyQHlvcG1haWwuY29tIiwicm9sZSI6IkNBTkRJREFURSIsImlhdCI6MTc3MzgxNjcxMywiZXhwIjoxNzczOTg5NTEzfQ.EdZRqFQpGHSczqULfM9gMWxEtmWGbDG5XUyBJLzyeXc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58759 - "POST /v1/recruiter/jobs/summarize?job_id=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59159 - "GET /v1/admin/candidates/search?query=kunal%20sharma&admin_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImVtYWlsIjoiYWRtaW4xQHlvcG1haWwuY29tIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzczODMzODUwLCJleHAiOjE3NzQwMDY2NTB9.rpPd1pQ0dRv27cxzPZdsENsDqFYCpiL737WXcTMDDPc HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59172 - "GET /v1/admin/candidates/search?query=kunalsharma%40gmail.com&admin_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImVtYWlsIjoiYWRtaW4xQHlvcG1haWwuY29tIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzczODMzODUwLCJleHAiOjE3NzQwMDY2NTB9.rpPd1pQ0dRv27cxzPZdsENsDqFYCpiL737WXcTMDDPc HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59940 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59940 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60153 - "GET /v1/admin/candidates/search?query=kunal%20sharma&= HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:60153 - "GET /v1/admin/candidates/search?query=kunal%20sharma&= HTTP/1.1" 404 Not Found

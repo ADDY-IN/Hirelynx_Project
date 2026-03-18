@@ -1,9 +1,8 @@
 import re
 import logging
-from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
-from app.models import DBCandidate, DBJob
+from app.models import DBCandidate
 from app.scoring import ScoringEngine
 from app.config import settings
 
@@ -22,27 +21,26 @@ class SearchService:
 
     @staticmethod
     def search_candidates(db: Session, query: str) -> List[Dict[str, Any]]:
-        """Semantic search for candidates based on a text query."""
-        from app.utils import encode_id
+        """Fast semantic search for candidates based on a text query."""
+        from app.utils import encode_id, clean_keywords
         
         query_low = query.lower().strip()
+        keywords = [k.strip() for k in query.replace(',', ' ').split() if len(k.strip()) > 3]
 
-        # 2. Semantic query prep
+        # Pre-encode query ONCE (not per candidate)
         query_embedding = None
         if engine.encoder and len(query_low) > 3:
             try:
                 query_embedding = engine.encoder.encode([query])[0]
             except Exception:
                 pass
-            
-        keywords = [k.strip() for k in query.replace(',', ' ').split() if len(k) > 3]
-        
-        # Fetch all candidates via ORM (safe, no transaction issues)
+
+        # Load all candidates from ORM
         candidates = db.query(DBCandidate).all()
         
         results = []
         for c in candidates:
-            # 1. In-memory name matching (avoids DB transaction issues)
+            # Fast in-memory name matching
             name_boost = 0.0
             if isinstance(c.personalDetails, dict):
                 first = (c.personalDetails.get("firstName") or "").lower()
@@ -50,7 +48,7 @@ class SearchService:
                 if query_low in first or query_low in last:
                     name_boost = 0.5
 
-            
+            # Extract candidate data
             c_skills = []
             if isinstance(c.skills, list):
                 for s in c.skills:
@@ -61,22 +59,29 @@ class SearchService:
 
             resume_text = ""
             if c.resumeParsedJson and isinstance(c.resumeParsedJson, dict):
-                resume_text = c.resumeParsedJson.get("text", "")
+                resume_text = c.resumeParsedJson.get("text", "") or ""
 
-            res = engine.score_with_embedding(
-                resume_text=resume_text,
-                jd_description=query,
-                query_embedding=query_embedding,
-                keywords=keywords,
-                candidate_skills=c_skills
-            )
-            
-            final_score = float(res["score"]) + name_boost
+            # Fast keyword check (skip heavy embedding if no resume text)
+            if not resume_text and not name_boost:
+                continue
+
+            try:
+                res = engine.score_with_embedding(
+                    resume_text=resume_text,
+                    jd_description=query,
+                    query_embedding=query_embedding,  # pre-computed, not re-computed per candidate
+                    keywords=keywords,
+                    candidate_skills=c_skills
+                )
+                final_score = float(res["score"]) + name_boost
+            except Exception:
+                final_score = name_boost
+                res = {"matched_skills": [], "recommendation": "Unknown"}
             
             results.append({
                 "candidateId": c.id,
                 "candidateToken": encode_id("CAND", c.id),
-                "score": round(float(min(1.0, final_score)), 4),
+                "score": round(min(1.0, final_score / 100.0), 4),
                 "recommendation": res["recommendation"],
                 "matchedSkills": res["matched_skills"],
                 "resumeS3Key": c.resumeS3Key

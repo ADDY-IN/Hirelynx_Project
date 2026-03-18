@@ -121,10 +121,14 @@ async def candidate_recs(user_token: str, db: Session = Depends(get_db)):
 # --- 4. RECOMMENDATION (JOBS/ADMIN) ---
 
 @app.get("/v1/admin/jobs/{job_token}/applications", response_model=List[MatchScore])
-async def job_recs(job_token: str, admin_token: str, db: Session = Depends(get_db)):
-    """Returns ranked applicants for a specific job (Admin only)."""
+async def job_recs(
+    job_token: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """Returns ranked applicants for a specific job (Admin only). Pass admin JWT as Bearer token."""
     try:
-        _ = extract_user_id_from_token(admin_token)
+        _ = extract_user_id_from_token(credentials.credentials)
         job_id = decode_id(job_token)
         recs = get_recommendations(db, job_id, for_candidate=False)
         return [MatchScore(
@@ -138,31 +142,45 @@ async def job_recs(job_token: str, admin_token: str, db: Session = Depends(get_d
             recommendation=r.recommendation,
             status=r.status or "COMPLETED"
         ) for r in recs]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 # --- 6. CANDIDATE SEARCH (ADMIN) ---
 
-@app.get("/v1/admin/candidates/search")
-async def search_candidates(query: str, admin_token: str, db: Session = Depends(get_db)):
-    """Semantic search for candidates by name, skill, or natural language query."""
+@app.post("/v1/admin/candidates/search")
+async def search_candidates(
+    query: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """Semantic search for candidates by name, skill, or natural language query. Pass admin JWT as Bearer token."""
     try:
-        _ = extract_user_id_from_token(admin_token)
+        _ = extract_user_id_from_token(credentials.credentials)
         results = SearchService.search_candidates(db, query)
         return {"results": results, "count": len(results)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/v1/candidate/summarize")
-async def candidate_summary(user_token: str, db: Session = Depends(get_db)):
-    """Generates a professional 'About Me' summary for the candidate."""
+async def candidate_summary(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """Generates a professional 'About Me' summary for the candidate. Pass user JWT as Bearer token."""
     try:
+        user_token = credentials.credentials
         user_id = extract_user_id_from_token(user_token)
         candidate = db.query(DBCandidate).filter(DBCandidate.userId == user_id).first()
         if not candidate:
             raise HTTPException(status_code=404, detail="Candidate profile not found.")
         return {"summary": summarizer_service.summarize_candidate_profile(candidate)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
