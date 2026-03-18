@@ -1,0 +1,7 @@
+{
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.extraPaths": ["./"],
+    "python.linting.enabled": false,
+    "python.analysis.autoImportCompletions": true
+}

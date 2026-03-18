@@ -21,17 +21,33 @@ class ScoringEngine:
             self.encoder = None
 
     def score(self, resume_text: str, jd_description: str, keywords: List[str]) -> Dict[str, Any]:
-        return self.score_with_embedding(resume_text, jd_description, None, keywords)
+        return self.score_with_embedding(resume_text, jd_description, None, keywords, [])
 
-    def score_with_embedding(self, resume_text: str, jd_description: str, query_embedding: Any, keywords: List[str]) -> Dict[str, Any]:
-        # 1. Keyword Score (Fuzzy Partial Ratio)
+    def score_with_embedding(self, resume_text: str, jd_description: str, query_embedding: Any, keywords: List[str], candidate_skills: List[str] = []) -> Dict[str, Any]:
+        from app.utils import clean_keywords
+        
+        # 1. Keyword Score (Fuzzy Matching + Structured Skills)
         resume_lower = resume_text.lower()
         matched = []
         
+        # Check against raw keywords (JD requirements)
         if keywords:
             for k in keywords:
-                if fuzz.partial_ratio(k.lower(), resume_lower) > 85:
+                k_low = k.lower()
+                # Fuzzy match in full text OR direct match in structured candidate skills
+                found = False
+                if candidate_skills:
+                    if any(k_low == cs.lower() for cs in candidate_skills):
+                        found = True
+                
+                if not found and fuzz.partial_ratio(k_low, resume_lower) > 85:
+                    found = True
+                
+                if found:
                     matched.append(k)
+        
+        # NEW: Clean and normalize matched skills
+        matched = clean_keywords(matched)
                     
         kw_score = (len(matched) / len(keywords) * 100) if keywords else 0
         
@@ -47,10 +63,18 @@ class ScoringEngine:
                     target_embedding = query_embedding
                 
                 if target_embedding is not None:
+                    # Determine cosine similarity (-1 to 1)
                     sim = cosine_similarity(np.array([resume_embedding]), np.array([target_embedding]))[0][0]
-                    sem_score = max(0.0, min(100.0, float(sim) * 100))
+                    # Convert to percentage (0 to 100)
+                    sem_score = max(0.0, float(sim) * 100)
             except Exception as e:
                 logger.error(f"Semantic scoring error: {e}")
+
+        # Combine scores (50/50 weight default)
+        
+        # Guard against zero lists
+        if not keywords:
+            kw_score = 0.0
 
         final = round((kw_score * self.weight) + (sem_score * (1 - self.weight)), 2)
         

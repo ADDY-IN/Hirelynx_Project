@@ -9,40 +9,52 @@ from app.database import Base
 # --- SQLAlchemy Models (Database) ---
 
 class DBCandidate(Base):
-    __tablename__ = "candidates"
+    __tablename__ = "candidate_profiles"
     id = Column(Integer, primary_key=True, index=True)
-    personal_details = Column(JSON, nullable=True) # Map to PersonalDetails
-    education = Column(JSON, default=[]) # List of Education
-    work_experience = Column(JSON, default=[]) # List of WorkExperience
-    skills = Column(JSON, default=[]) # List of Skill objects
-    projects = Column(JSON, default=[]) # List of Project
-    resume_s3_key = Column(String, nullable=True)
-    resume_parse_status = Column(String, default="PENDING")
-    resume_parsed_json = Column(JSON, nullable=True)
-    resume_last_parsed_at = Column(DateTime, nullable=True)
-    is_profile_completed = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    userId = Column(Integer, nullable=False) # Link to users table, required by DB
+    personalDetails = Column(JSON, nullable=True) 
+    education = Column(JSON, default=[]) 
+    workExperience = Column(JSON, default=[]) 
+    skills = Column(JSON, default=[]) 
+    projects = Column(JSON, default=[]) 
+    resumeS3Key = Column(String, nullable=True)
+    resumeParseStatus = Column(String, default="PENDING")
+    resumeParsedJson = Column(JSON, nullable=True)
+    resumeLastParsedAt = Column(DateTime, nullable=True)
+    isProfileCompleted = Column(Boolean, default=False)
+    createdAt = Column(DateTime, default=datetime.utcnow)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class DBJob(Base):
     __tablename__ = "jobs"
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
-    skills = Column(JSON, default=[]) # List[str]
-    requirements = Column(JSON, nullable=True)
-    experience_years = Column(Float, default=0)
+    title = Column(String, index=True, nullable=False)
+    requiredSkills = Column(JSON, default=[]) 
+    description = Column(String, nullable=False) 
+    companyName = Column(String, default="Unknown", nullable=False)
+    location = Column(String, default="Unknown", nullable=False)
+    employmentType = Column(String, default="FULL_TIME", nullable=False)
+    status = Column(String, default="PENDING", nullable=False)
+    experienceMin = Column(Float, default=0)
+    experienceMax = Column(Float, nullable=True)
     education = Column(JSON, default=[])
     job_s3_key = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    applicationsCount = Column(Integer, default=0, nullable=False)
+    isRemote = Column(Boolean, default=False, nullable=False)
+    currency = Column(String, default="USD", nullable=False)
+    requiresWorkAuthorization = Column(Boolean, default=False, nullable=False)
+    openToInternationalCandidates = Column(Boolean, default=False, nullable=False)
+    createdAt = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 class DBMatch(Base):
     __tablename__ = "matches"
     id = Column(Integer, primary_key=True, index=True)
-    candidate_id = Column(Integer, ForeignKey("candidates.id"))
-    job_id = Column(Integer, ForeignKey("jobs.id"))
-    overall_score = Column(Float)
+    candidateId = Column(Integer, ForeignKey("candidate_profiles.id"))
+    jobId = Column(Integer, ForeignKey("jobs.id"))
+    overallScore = Column(Float)
     breakdown = Column(JSON, default={})
-    matched_skills = Column(JSON, default=[])
+    matchedSkills = Column(JSON, default=[])
     recommendation = Column(String)
     status = Column(String, default="PENDING")
 
@@ -121,12 +133,13 @@ class Capabilities(BaseModel):
 
 class CandidateProfile(BaseModel):
     id: Optional[int] = None
+    userId: int
     personalDetails: Optional[PersonalDetails] = None
-    education: List[Education] = []
-    workExperience: List[WorkExperience] = []
-    skills: List[Skill] = []
-    projects: List[Project] = []
-    certifications: List[Certificate] = []
+    education: Optional[List[Education]] = []
+    workExperience: Optional[List[WorkExperience]] = []
+    skills: Optional[List[Skill]] = []
+    projects: Optional[List[Project]] = []
+    certifications: Optional[List[Certificate]] = []
     capabilities: Optional[Capabilities] = None
     resumeS3Key: Optional[str] = None
     resumeParseStatus: Optional[ResumeParseStatus] = None
@@ -140,10 +153,10 @@ class CandidateProfile(BaseModel):
 class JobProfile(BaseModel):
     id: Optional[int] = None
     title: str
-    skills: List[str] = []
+    skills: Optional[List[str]] = []
     requirements: Optional[Any] = None
     experienceYears: Optional[float] = 0
-    education: List[str] = []
+    education: Optional[List[str]] = []
     jobS3Key: Optional[str] = None
 
     class Config:
@@ -154,11 +167,15 @@ class MatchScore(BaseModel):
     candidateId: int
     jobId: int
     overallScore: float
-    breakdown: Dict[str, float] = {}
+    matchPercentage: Optional[float] = None
+    suitabilityScore: Optional[float] = None
+    breakdown: Dict[str, Any] = {}
     matchedSkills: List[str] = []
     recommendation: str
     status: str = 'PENDING'
 
     class Config:
         from_attributes = True
+        validate_assignment = True
+        extra = "allow"
 
