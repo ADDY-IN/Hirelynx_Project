@@ -1,179 +1,627 @@
+"""
+Universal Candidate Summary Generator
+=======================================
+Generates natural, AI-feeling first-person professional summaries for
+candidates from ANY profession — tech, culinary, trades, healthcare,
+finance, education, legal, creative, and beyond.
+
+Design principles:
+- Zero hardcoded profession assumptions in sentence templates
+- Domain inference from TITLE first, then skills — falls back to the
+  candidate's own title words, NEVER to a fixed category like "software engineering"
+- Multi-pool sentence variation ensures every summary sounds unique
+- Works for: chefs, plumbers, nurses, accountants, teachers, engineers,
+  lawyers, designers, data scientists, warehouse workers, pilots — everyone
+"""
+import re
+import json
+import random
 import logging
-from typing import Optional
-from app.config import settings
+from typing import List, Optional, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
-class SummarizerService:
-    def __init__(self):
-        logger.info("Initializing Native Extractive Summarizer Service")
+# ---------------------------------------------------------------------------
+# LLM helper — Groq for all summarization tasks
+# ---------------------------------------------------------------------------
+def _llm_generate(prompt: str) -> Optional[str]:
+    """
+    Generate text via Groq API. Returns None on failure so callers can fallback.
+    """
+    try:
+        from app.config import settings
+        from groq import Groq
+        api_key = getattr(settings, "GROQ_API_KEY", None)
+        if not api_key:
+            return None
+        client = Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=400,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Groq LLM unavailable: {e}")
+    return None
 
-    def _extract_sections(self, text: str) -> dict:
-        """Heuristically extracts key sections from Resume/JD text."""
-        import re
-        
-        sections = {
-            "Profile/Summary": [],
-            "Experience/Responsibilities": [],
-            "Skills/Requirements": [],
-            "Education/Other": []
-        }
-        
-        # Split text into rough lines or sentences. Split on single/double newlines and semicolons
-        lines = re.split(r'\n+|\.\s+(?=[A-Z])|;\s*', text)
-        
-        current_section = "Profile/Summary"
-        
-        for line in lines:
-            line_str = line.strip()
-            # Ignore very short lines or lines that are ALL CAPS (often just noisy headers)
-            if not line_str or len(line_str) < 15 or line_str.isupper():
-                continue
-                
-            line_lower = line_str.lower()
-            
-            # Advanced keyword-based section routing
-            if any(k in line_lower for k in ["experience", "responsibility", "what you'll do", "employment", "history", "role", "duties"]):
-                current_section = "Experience/Responsibilities"
-            elif any(k in line_lower for k in ["skill", "requirement", "qualifications", "technologies", "tech stack", "proficient", "knowledge"]):
-                current_section = "Skills/Requirements"
-            elif any(k in line_lower for k in ["education", "degree", "university", "college", "certification", "bachelor", "master"]):
-                current_section = "Education/Other"
-                
-            # Add line to current section
-            if len(sections[current_section]) < 4: # Keep sections brief (max 4 sentences)
-                # Clean up weird characters common in parsing, but keep basic punctuation
-                clean_line = re.sub(r'[^\w\s.,!?-]', ' ', line_str)
-                clean_line = " ".join(clean_line.split()) # Remove multi-spaces
-                if clean_line and len(clean_line) > 20: # Ignore short garbage lines
-                    # Truncate extremely long paragraphs to keep it concise
-                    if len(clean_line) > 200:
-                        clean_line = clean_line[:197].rsplit(' ', 1)[0] + "..."
-                    sections[current_section].append(clean_line)
-                    
-        return sections
 
-    def summarize(self, text: str, max_length: int = 150) -> str:
-        """
-        Generates a structured, paragraph-based summary using pure Python logic.
-        """
-        if not text or len(text.strip()) < 50:
-            return "Text is too short to generate a meaningful summary."
+# ---------------------------------------------------------------------------
+# Universal profession domain clusters
+# ---------------------------------------------------------------------------
+_DOMAIN_CLUSTERS: Dict[str, List[str]] = {
+    # ── Technology ──────────────────────────────────────────────────────────
+    "software development": [
+        "python", "java", "javascript", "typescript", "c++", "c#", "ruby", "go", "rust",
+        "react", "angular", "vue", "node", "django", "flask", "fastapi", "spring",
+        "backend", "frontend", "full stack", "fullstack", "software engineer",
+        "software developer", "programmer", "coding", "web development",
+    ],
+    "cloud & DevOps":       [
+        "aws", "azure", "gcp", "docker", "kubernetes", "terraform", "ansible",
+        "jenkins", "ci/cd", "devops", "cloud", "infrastructure", "sre", "linux",
+        "helm", "prometheus", "grafana", "cloud engineer", "platform engineer",
+    ],
+    "data & analytics":     [
+        "sql", "pandas", "spark", "hadoop", "dbt", "airflow", "bigquery", "snowflake",
+        "tableau", "powerbi", "looker", "data analyst", "data engineer",
+        "business analyst", "bi developer", "etl", "data warehouse",
+    ],
+    "AI & machine learning": [
+        "machine learning", "deep learning", "nlp", "pytorch", "tensorflow",
+        "scikit-learn", "bert", "gpt", "llm", "generative ai", "mlops",
+        "computer vision", "data scientist", "ml engineer", "ai engineer",
+        "huggingface", "langchain", "xgboost",
+    ],
+    "mobile development":   [
+        "ios", "android", "flutter", "react native", "swift", "kotlin",
+        "xcode", "mobile developer", "app developer", "jetpack compose",
+    ],
+    "cybersecurity":        [
+        "cybersecurity", "penetration testing", "soc", "siem", "owasp",
+        "fortify", "sonarqube", "compliance", "vulnerability", "firewall",
+        "security analyst", "infosec", "ethical hacking", "network security",
+    ],
+    "product management":   [
+        "product manager", "product owner", "roadmap", "agile", "scrum",
+        "stakeholder", "kpi", "okr", "user story", "sprint", "backlog",
+        "go-to-market", "product strategy", "ux", "user research",
+    ],
 
-        # Limit input to avoid excessive regex processing
-        clean_text = " ".join(text.split())[:8000] 
-        
-        sections = self._extract_sections(clean_text)
-        
-        formatted_summary = []
-        
-        # Format "Profile/Summary"
-        if sections["Profile/Summary"]:
-            formatted_summary.append("Overview: " + " ".join(sections["Profile/Summary"]))
-            
-        # Format "Experience/Responsibilities"
-        if sections["Experience/Responsibilities"]:
-            formatted_summary.append("Key Highlights & Experience: • " + " • ".join(sections["Experience/Responsibilities"]))
-            
-        # Format "Skills/Requirements"
-        if sections["Skills/Requirements"]:
-            formatted_summary.append("Core Skills & Requirements: • " + " • ".join(sections["Skills/Requirements"]))
-            
-        # Format "Education/Other"
-        if sections["Education/Other"]:
-            formatted_summary.append("Education & Background: • " + " • ".join(sections["Education/Other"]))
+    # ── Healthcare & Life Sciences ───────────────────────────────────────────
+    "healthcare & nursing":  [
+        "nurse", "nursing", "rn", "lpn", "patient care", "clinical", "icu",
+        "er", "medication", "vital signs", "emr", "ehr", "healthcare",
+        "hospital", "medical", "phlebotomy", "caregiver", "health aide",
+    ],
+    "medicine & pharmacy":   [
+        "physician", "doctor", "md", "pharmacist", "pharmacy", "prescription",
+        "diagnosis", "treatment", "surgery", "radiology", "lab technician",
+        "physiotherapy", "occupational therapy", "dental", "dentist", "optometry",
+    ],
 
-        if not formatted_summary:
-            return "Failed to extract structured summary from text."
+    # ── Culinary & Hospitality ───────────────────────────────────────────────
+    "culinary & food service": [
+        "chef", "cook", "culinary", "kitchen", "food preparation", "menu",
+        "catering", "pastry", "baking", "sous chef", "line cook",
+        "food safety", "haccp", "restaurant", "barista", "bartender",
+        "sommelier", "banquet", "food and beverage",
+    ],
+    "hospitality & tourism":   [
+        "hotel", "hospitality", "front desk", "concierge", "housekeeping",
+        "guest services", "travel", "tourism", "resort", "event coordinator",
+        "reservation", "property management",
+    ],
 
-        return " | ".join(formatted_summary)
+    # ── Skilled Trades ───────────────────────────────────────────────────────
+    "skilled trades":          [
+        "plumber", "plumbing", "electrician", "electrical", "carpenter",
+        "carpentry", "welder", "welding", "hvac", "mechanic", "technician",
+        "pipefitter", "millwright", "ironworker", "sheet metal", "mason",
+        "tiler", "roofer", "painter", "drywaller", "gas fitter",
+        "red seal", "apprentice", "journeyman",
+    ],
+    "construction":            [
+        "construction", "site supervisor", "project manager", "general contractor",
+        "foreman", "estimator", "blueprint", "autocad", "scheduling",
+        "site management", "project coordination", "building", "renovation",
+    ],
 
-    def summarize_candidate_profile(self, candidate) -> str:
-        """Generates a dynamic, first-person introduction using structural candidate data."""
-        
-        # Extract Personal Details
-        name = "a professional"
-        if candidate.personalDetails and isinstance(candidate.personalDetails, dict):
-            name_val = candidate.personalDetails.get("name", "")
-            if isinstance(name_val, str) and name_val:
-                name = name_val.strip()
-            
-            # Fallback if name is empty but email exists
-            if name == "a professional" or not name:
-                email = candidate.personalDetails.get("email", "")
-                if not email and candidate.resumeParsedJson:
-                    email = candidate.resumeParsedJson.get("email", "")
-                    
-                if isinstance(email, list) and email:
-                    email = email[0]
-                if isinstance(email, str) and "@" in email:
-                    import re
-                    prefix = email.split("@")[0]
-                    # Strip trailing numbers/symbols and capitalize
-                    clean_prefix = re.sub(r'[^a-zA-Z]+$', '', prefix)
-                    if clean_prefix:
-                        # Add space between camelCase if present, else just title
-                        spaced = re.sub(r'([a-z])([A-Z])', r'\1 \2', clean_prefix).title()
-                        name = spaced
+    # ── Finance & Accounting ─────────────────────────────────────────────────
+    "finance & accounting":    [
+        "accountant", "accounting", "cpa", "bookkeeper", "bookkeeping",
+        "tax", "audit", "financial analyst", "cfo", "controller",
+        "accounts payable", "accounts receivable", "payroll", "quickbooks",
+        "xero", "sage", "gaap", "ifrs", "financial reporting", "budget",
+        "forecasting",
+    ],
+    "banking & investment":    [
+        "banking", "bank", "investment", "portfolio", "wealth management",
+        "equity", "fixed income", "risk management", "trading", "broker",
+        "financial advisor", "mutual fund", "compliance", "aml",
+        "capital markets",
+    ],
 
-        # Extract Education
-        education_str = ""
-        if candidate.education and isinstance(candidate.education, list) and len(candidate.education) > 0:
-            edu = candidate.education[0]
-            degree = edu.get("degree", edu.get("degreeName", "a degree"))
-            school = edu.get("school", edu.get("schoolName", edu.get("organization", "university")))
-            
-            if degree and degree != "a degree":
-                education_str = f"I graduated with {degree} from {school}."
+    # ── Education & Training ─────────────────────────────────────────────────
+    "education & teaching":    [
+        "teacher", "teaching", "educator", "instructor", "professor",
+        "curriculum", "lesson plan", "classroom", "student", "school",
+        "academic", "tutor", "e-learning", "training", "workshop",
+        "educational technology",
+    ],
+
+    # ── Legal ────────────────────────────────────────────────────────────────
+    "legal":                   [
+        "lawyer", "attorney", "solicitor", "barrister", "paralegal",
+        "legal assistant", "contract", "litigation", "compliance",
+        "corporate law", "real estate law", "immigration", "intellectual property",
+        "dispute resolution", "arbitration",
+    ],
+
+    # ── Marketing & Sales ────────────────────────────────────────────────────
+    "marketing & growth":      [
+        "marketing", "digital marketing", "seo", "sem", "social media",
+        "content marketing", "email marketing", "brand", "advertising",
+        "campaign", "google ads", "meta ads", "crm", "hubspot",
+        "salesforce", "lead generation",
+    ],
+    "sales & business dev":    [
+        "sales", "account executive", "business development", "bdr", "sdr",
+        "closing", "pipeline", "quota", "revenue", "b2b", "b2c",
+        "client relations", "customer success", "territory management",
+    ],
+
+    # ── Creative & Design ────────────────────────────────────────────────────
+    "design & creative":       [
+        "graphic designer", "ui designer", "ux designer", "product designer",
+        "illustrator", "figma", "sketch", "adobe", "photoshop", "indesign",
+        "motion graphics", "video editing", "photography", "brand design",
+        "typography",
+    ],
+
+    # ── Logistics & Supply Chain ─────────────────────────────────────────────
+    "logistics & operations":  [
+        "logistics", "supply chain", "warehouse", "inventory", "forklift",
+        "shipping", "receiving", "dispatch", "fleet management",
+        "procurement", "vendor management", "operations manager",
+        "lean", "six sigma",
+    ],
+
+    # ── Human Resources ──────────────────────────────────────────────────────
+    "human resources":         [
+        "hr", "human resources", "recruiting", "recruiter", "talent acquisition",
+        "onboarding", "offboarding", "hris", "workday", "bamboohr",
+        "compensation", "benefits", "employee relations", "labour relations",
+        "performance management",
+    ],
+}
+
+# Humanised labels for each domain — used in sentence construction
+_DOMAIN_LABELS: Dict[str, str] = {k: k for k in _DOMAIN_CLUSTERS}
+
+
+def _infer_domains(skill_names: List[str], job_title: str) -> List[str]:
+    """
+    Infer the top 1–2 professional domains from skills and job title.
+    Uses word-boundary regex to avoid false positives (e.g. 'er' from
+    'healthcare' matching inside 'Water Supply Systems').
+    Job title is included so a 'Head Chef' with no skills still maps correctly.
+    """
+    # Combine all terms into a single searchable corpus
+    combined_terms = [s.lower() for s in skill_names] + [job_title.lower()]
+
+    scores: Dict[str, int] = {}
+    for domain, keywords in _DOMAIN_CLUSTERS.items():
+        score = 0
+        for kw in keywords:
+            # Use word-boundary search for single tokens; phrase match for multi-word keywords
+            if " " in kw:
+                # Multi-word phrase: match as exact phrase within any term
+                pattern = re.escape(kw)
             else:
-                education_str = f"I graduated from {school}."
+                # Single word: require word boundaries to prevent 'er' matching 'water'
+                pattern = rf"\b{re.escape(kw)}\b"
+            for term in combined_terms:
+                if re.search(pattern, term):
+                    score += 1
+                    break   # count each keyword at most once
+        if score > 0:
+            scores[domain] = score
 
-        # Extract Work Experience / Current Role
-        role_str = ""
-        exp_details = []
-        if candidate.workExperience and isinstance(candidate.workExperience, list):
-            for exp in candidate.workExperience:
-                title = exp.get("jobTitle")
-                company = exp.get("companyName", exp.get("company", exp.get("organization")))
-                
-                if title and company and title != "N/A" and company != "Extracted from History":
-                    if not role_str:
-                        role_str = f"I have recently worked as a {title} at {company}."
-                        
-                resp = exp.get("responsibilities", [])
-                if resp and isinstance(resp, list):
-                    short_resp = str(resp[0])[:150]
-                    if len(str(resp[0])) > 150:
-                        short_resp += "..."
-                    # Clean the responsibility string a bit
-                    clean_resp = "".join([c for c in short_resp if c.isalnum() or c in " .,-"])
-                    if clean_resp:
-                        exp_details.append(clean_resp.strip())
+    return sorted(scores, key=lambda k: scores[k], reverse=True)[:2]
 
-        # Extract Skills
-        skills_str = ""
-        if candidate.skills and isinstance(candidate.skills, list):
-            skill_names = []
-            for s in candidate.skills[:5]: # Top 5 skills
-                if isinstance(s, dict) and "name" in s:
-                    skill_names.append(s["name"])
-                elif isinstance(s, str):
-                    skill_names.append(s)
-            if skill_names:
-                skills_str = f"My core technical skills include {', '.join(skill_names)}."
 
-        # Bring it all together in a fluent bio
-        bio_parts = [f"I am {name}."]
-        if education_str: bio_parts.append(education_str)
-        if role_str: bio_parts.append(role_str)
-        if skills_str: bio_parts.append(skills_str)
-        
-        bio = " ".join(bio_parts)
-        
-        if exp_details:
-            bio += f" Some highlights from my experience include: " + ". ".join(exp_details[:2]) + "."
-            
-        return bio
+def _title_to_domain_str(job_title: str) -> str:
+    """
+    Derive a human-friendly domain phrase directly from the job title
+    when no cluster match was found. E.g. 'Master Electrician' → 'the
+    electrical trades', 'Executive Chef' → 'the culinary arts'.
+    """
+    t = job_title.lower().strip()
+    # Generic fallback mappings by title keyword
+    fallbacks = [
+        (r"\b(chef|cook|pastry|baker|culinary)\b",   "the culinary arts"),
+        (r"\b(plumb|hvac|pipefitter|gas fitter)\b",  "plumbing and mechanical systems"),
+        (r"\b(electri|wiring|electrician)\b",         "electrical systems and installation"),
+        (r"\b(nurse|nursing|rn|lpn)\b",               "healthcare and patient care"),
+        (r"\b(doctor|physician|surgeon|md)\b",         "medicine and clinical practice"),
+        (r"\b(teacher|instructor|educator|tutor)\b",  "education and curriculum delivery"),
+        (r"\b(lawyer|attorney|paralegal|legal)\b",    "legal practice and advisory"),
+        (r"\b(accountant|cpa|bookkeep|auditor)\b",    "accounting and financial reporting"),
+        (r"\b(designer|ux|ui|creative|illustrator)\b","design and creative direction"),
+        (r"\b(sales|account exec|bdr|sdr)\b",         "sales and business development"),
+        (r"\b(logistics|warehouse|supply chain)\b",   "logistics and supply chain management"),
+        (r"\b(hr|recruiter|talent|human resource)\b", "human resources and people operations"),
+        (r"\b(market|seo|brand|advertising)\b",       "marketing and brand growth"),
+        (r"\b(construct|foreman|site super|estimat)\b","construction and project delivery"),
+        (r"\b(carpenter|welder|mason|roofer)\b",      "skilled trades and craftsmanship"),
+        (r"\b(mechanic|technician|auto)\b",           "automotive and mechanical services"),
+    ]
+    for pattern, label in fallbacks:
+        if re.search(pattern, t):
+            return label
+    # Last resort: use the title itself
+    return f"the {job_title.strip().lower()} field" if job_title else "their professional field"
 
-# Singleton instance
+
+def _infer_years(work_experience: List[Dict]) -> Optional[int]:
+    """Estimate total years of experience from date ranges."""
+    total = 0
+    for exp in work_experience:
+        start = exp.get("startDate", "")
+        end   = exp.get("endDate", "")
+        curr  = exp.get("currentlyWorking", False)
+        sy = re.search(r"\b(20\d{2}|19\d{2})\b", str(start))
+        ey = re.search(r"\b(20\d{2}|19\d{2})\b", str(end))
+        if sy:
+            s_yr = int(sy.group(1))
+            e_yr = 2026 if curr else (int(ey.group(1)) if ey else s_yr + 1)
+            total += max(0, e_yr - s_yr)
+    return total if total > 0 else None
+
+
+def _pick(pool: List[str]) -> str:
+    return random.choice(pool)
+
+
+# ---------------------------------------------------------------------------
+# Sentence pool generators — all work for ANY profession
+# ---------------------------------------------------------------------------
+
+def _opening(name: str, title: str, domain_str: str, years: Optional[int]) -> str:
+    yr = f"over {years} year{'s' if years != 1 else ''}" if years else "several years of"
+    t  = title or "professional"
+    pools = [
+        f"I am a dedicated {t} with {yr} experience in {domain_str}.",
+        f"With {yr} experience in {domain_str}, I have built a strong track record for quality work and consistent results.",
+        f"I bring {yr} hands-on expertise in {domain_str}, combining deep practical knowledge with a commitment to excellence.",
+        f"As a skilled {t} with {yr} experience, I have developed a strong command of {domain_str}.",
+        f"I am an accomplished {t} with a career spanning {yr} in {domain_str}.",
+        f"Driven by a passion for my craft, I have spent {yr} honing my skills in {domain_str}.",
+    ]
+    return _pick(pools)
+
+
+def _role_sentence(role: str, company: str, is_current: bool,
+                   responsibilities: List[str]) -> Tuple[str, bool]:
+    """Returns (sentence, highlight_included)."""
+    r = role.strip().rstrip(".") if role else "a professional role"
+    c = company.strip() if company else "a reputable organisation"
+
+    highlight = ""
+    if responsibilities:
+        scored = sorted(
+            responsibilities,
+            key=lambda x: (bool(re.search(r"\d+", x)), len(x)),
+            reverse=True,
+        )
+        raw = scored[0][:130].strip().rstrip(".")
+        highlight = raw[0].lower() + raw[1:] if raw else ""
+
+    included = bool(highlight)
+
+    if highlight:
+        pools = [
+            f"{'Currently serving' if is_current else 'Most recently'} as a {r} at {c}, I have {highlight}.",
+            f"As a {r} at {c}, I have {highlight}, which has sharpened my practical expertise significantly.",
+            f"At {c}, I serve as a {r} and have {highlight}.",
+            f"In my role as {r} at {c}, I have {highlight}.",
+        ]
+    else:
+        pools = [
+            f"I currently hold the position of {r} at {c}." if is_current else f"Most recently, I worked as a {r} at {c}.",
+            f"I have worked as a {r} at {c}.",
+            f"Professionally, I serve as a {r} at {c}." if is_current else f"I have experience working as a {r} at {c}.",
+        ]
+    return _pick(pools), included
+
+
+def _skills_sentence(skill_names: List[str], domain_str: str) -> str:
+    top = skill_names[:6]
+    if not top:
+        return ""
+    skill_list = (
+        ", ".join(top[:-1]) + f" and {top[-1]}" if len(top) > 1 else top[0]
+    )
+    pools = [
+        f"My toolkit includes {skill_list}, which I apply with precision across {domain_str}.",
+        f"I am proficient in {skill_list} — skills that underpin my effectiveness in {domain_str}.",
+        f"My core competencies span {skill_list}, making me a versatile contributor in {domain_str}.",
+        f"I bring hands-on proficiency with {skill_list}, developed through real-world practice.",
+        f"My skill set covers {skill_list} — capabilities honed through consistent, on-the-job application.",
+    ]
+    return _pick(pools)
+
+
+def _education_sentence(degree: str, institution: str) -> str:
+    d = degree.strip().rstrip(".")
+    s = institution.strip()
+    pools = [
+        f"Academically, I hold a {d} from {s}, which gives me a strong foundation for my professional practice.",
+        f"I completed a {d} at {s}, where I developed the theoretical grounding that informs my work.",
+        f"My formal education includes a {d} from {s}.",
+        f"Holding a {d} from {s}, I combine academic rigour with extensive practical experience.",
+        f"I trained at {s}, graduating with a {d} that prepared me well for my career.",
+    ]
+    return _pick(pools)
+
+
+def _achievement_sentence(responsibilities: List[str]) -> Optional[str]:
+    quantified = [
+        r for r in responsibilities
+        if re.search(
+            r"\d+\s*(?:%|k|x|hrs?|days?|weeks?|months?|years?|TB|GB|MB|users?|"
+            r"clients?|orders?|meals?|units?|projects?|accounts?|students?|"
+            r"patients?|employees?|staff|million|thousand|hundred|km|ft|sqft)",
+            r, re.IGNORECASE
+        )
+    ]
+    if not quantified:
+        return None
+    raw = quantified[0][:130].strip().rstrip(".")
+    h   = raw[0].lower() + raw[1:] if raw else ""
+    pools = [
+        f"Notably, I have {h}.",
+        f"A highlight of my career is having {h}.",
+        f"My impact is demonstrated by {h}.",
+    ]
+    return _pick(pools)
+
+
+def _closing_sentence(domain_str: str, work_type: Optional[str]) -> str:
+    wt = ""
+    if work_type == "REMOTE":
+        wt = ", and I am fully open to remote opportunities"
+    elif work_type == "HYBRID":
+        wt = ", and I am comfortable working in hybrid environments"
+    pools = [
+        f"I am deeply committed to continuous growth and delivering excellent results in {domain_str}{wt}.",
+        f"Known for reliability and a strong work ethic, I bring real value to every team I join{wt}.",
+        f"I thrive in collaborative, fast-paced settings and take pride in the quality of my work{wt}.",
+        f"I am passionate about {domain_str} and always looking for opportunities to make a meaningful contribution{wt}.",
+        f"Detail-oriented and highly motivated, I consistently go above and beyond in everything I take on{wt}.",
+        f"Whether working independently or as part of a team, I approach every challenge with professionalism and dedication{wt}.",
+    ]
+    return _pick(pools)
+
+
+# ---------------------------------------------------------------------------
+# Job Description (JD) Summary Generator
+# ---------------------------------------------------------------------------
+
+# Human-readable display maps for enum-style fields
+_EXP_LEVEL_LABELS: Dict[str, str] = {
+    "ENTRY":           "entry-level candidates",
+    "JUNIOR":          "junior professionals (0–2 years)",
+    "ONE_TO_THREE":    "candidates with 1–3 years of experience",
+    "TWO_TO_FIVE":     "mid-level professionals (2–5 years)",
+    "THREE_TO_FIVE":   "professionals with 3–5 years of experience",
+    "FIVE_TO_TEN":     "seasoned professionals with 5–10 years of experience",
+    "MID":             "mid-level professionals",
+    "SENIOR":          "senior professionals with 5+ years of experience",
+    "LEAD":            "lead-level professionals",
+    "MANAGER":         "managers and team leads",
+    "DIRECTOR":        "director-level professionals",
+    "EXECUTIVE":       "executive-level leaders",
+    "OVER_TEN":        "highly experienced professionals with 10+ years",
+}
+
+_EMPLOYMENT_LABELS: Dict[str, str] = {
+    "FULL_TIME":   "full-time",
+    "PART_TIME":   "part-time",
+    "CONTRACT":    "contract",
+    "INTERNSHIP":  "internship",
+    "TEMPORARY":   "temporary",
+    "FREELANCE":   "freelance",
+}
+
+_WORK_SCHEDULE_LABELS: Dict[str, str] = {
+    "DAY":       "day shift",
+    "EVENING":   "evening shift",
+    "NIGHT":     "night shift",
+    "ROTATING":  "rotating shifts",
+    "FLEXIBLE":  "flexible hours",
+    "WEEKENDS":  "weekends",
+}
+
+
+def generate_job_summary(job_data) -> str:
+    """
+    Generate a job post summary using local Ollama (llama3.1).
+    If Ollama is not running, falls back to a simple template sentence.
+    """
+    def get(field: str, default=None):
+        if isinstance(job_data, dict):
+            return job_data.get(field, default)
+        return getattr(job_data, field, default)
+
+    # Build compact job dict for the prompt
+    job_dict = {
+        "title":            (get("title") or "").strip(),
+        "location":         (get("location") or "").strip() or None,
+        "employmentType":   (get("employmentType") or "").replace("_", " ").title() or None,
+        "experienceMin":    get("experienceMin"),
+        "experienceMax":    get("experienceMax"),
+        "salaryMin":        get("salaryMin"),
+        "salaryMax":        get("salaryMax"),
+        "currency":         (get("currency") or "CAD").upper(),
+        "isRemote":         get("isRemote") or False,
+        "responsibilities": (get("responsibilities") or [])[:5],
+        "requiredSkills":   (get("requiredSkills") or [])[:6],
+        "description":      ((get("description") or "")[:300]) or None,
+    }
+    job_dict = {k: v for k, v in job_dict.items() if v not in (None, [], "")}
+
+    prompt = f"""Write a professional job post summary paragraph for this job.
+
+Rules:
+- 6-8 natural sentences, under 220 words
+- Written in third person (e.g. "We are looking for...", "The ideal candidate...")
+- Sound like a real job posting, not a template
+- Include the most important details (role, skills, location, experience if present)
+- No buzzwords like "dynamic", "synergy", "passionate"
+
+Job data:
+{json.dumps(job_dict, indent=2)}
+
+Return ONLY the summary paragraph, nothing else."""
+
+    result = _llm_generate(prompt)
+    if result:
+        return result
+
+    # Simple fallback if Ollama is not running
+    title = job_dict.get("title", "professional")
+    skills = job_dict.get("requiredSkills", [])
+    location = job_dict.get("location", "")
+    sk_str = ", ".join(skills[:4]) if skills else ""
+    loc_str = f" based in {location}" if location else ""
+    return (
+        f"We are looking for a {title}{loc_str}."
+        + (f" The ideal candidate will have experience with {sk_str}." if sk_str else "")
+        + " This is an exciting opportunity to join a growing team."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main SummarizerService
+# ---------------------------------------------------------------------------
+
+class SummarizerService:
+
+    def __init__(self):
+        logger.info("Initializing Universal Candidate Summary Generator")
+
+    # ------------------------------------------------------------------
+    # JD extractive summarizer
+    # ------------------------------------------------------------------
+    def summarize(self, text: str, max_length: int = 150) -> str:
+        """Extractive summary for job descriptions — used by JD summarize endpoint."""
+        if not text or len(text.strip()) < 50:
+            return "Insufficient content to generate a summary."
+
+        clean = " ".join(text.split())[:8000]
+        sentences = re.split(r'\.\s+(?=[A-Z])|;\s+|\n', clean)
+
+        def score(s: str) -> float:
+            s = s.strip()
+            if len(s) < 20:
+                return 0.0
+            sc = len(s) * 0.01
+            if re.search(r'\b(lead|build|develop|design|manage|own|deliver|drive|scale|implement|prepare|serve|maintain|install|teach|advise|support|coordinate)\b', s, re.I):
+                sc += 2
+            if re.search(r'\d+', s):
+                sc += 1.5
+            if re.search(r'\b(experience|skills?|qualifications?|requirements?|responsibilities|duties)\b', s, re.I):
+                sc += 1
+            return sc
+
+        ranked = sorted(sentences, key=score, reverse=True)
+        top = [s.strip().rstrip(".") for s in ranked[:5] if s.strip() and len(s.strip()) > 20]
+        if not top:
+            return "Unable to generate a meaningful summary from the provided text."
+        return ". ".join(top) + "."
+
+    # ------------------------------------------------------------------
+    # Candidate bio generator — works for ANY profession
+    # ------------------------------------------------------------------
+    def summarize_candidate_profile(self, candidate) -> str:
+        """
+        Generates a natural first-person 'About Me' summary using Groq LLM.
+        Falls back to a simple sentence if Groq is unavailable.
+        """
+        import json as json_mod
+        from app.config import settings
+
+        # Build a compact candidate dict to send to the LLM
+        pd = candidate.personalDetails or {}
+        if not isinstance(pd, dict):
+            pd = {}
+
+        skills = []
+        for s in (candidate.skills or []):
+            if isinstance(s, dict):
+                name = s.get("name", "")
+                if name:
+                    skills.append(name)
+            elif isinstance(s, str) and s:
+                skills.append(s)
+
+        work_exp = []
+        for w in (candidate.workExperience or []):
+            if not isinstance(w, dict):
+                continue
+            work_exp.append({
+                "role": w.get("jobTitle") or w.get("role") or "",
+                "company": w.get("companyName") or "",
+                "current": bool(w.get("currentlyWorking")),
+                "responsibilities": (w.get("responsibilities") or [])[:3],
+            })
+
+        education = []
+        for e in (candidate.education or []):
+            if isinstance(e, dict):
+                education.append({
+                    "degree": e.get("degree", ""),
+                    "institution": e.get("institution", ""),
+                })
+
+        candidate_data = {
+            "name": f"{pd.get('firstName','')} {pd.get('lastName','')}".strip() or None,
+            "skills": skills[:10],
+            "workExperience": work_exp,
+            "education": education,
+        }
+
+        api_key_present = bool(getattr(settings, "GROQ_API_KEY", None))
+
+        prompt = f"""Write a professional "About Me" summary for a candidate based on the data below.
+
+Rules:
+- Write in FIRST PERSON (I am..., I have..., I've...)
+- 5-7 natural sentences, under 220 words
+- No buzzwords like "passionate", "results-driven", "dynamic"
+- Focus on REAL skills, experience, and impact
+- Sound like a real human wrote it — not a robot template
+
+Candidate data:
+{json.dumps(candidate_data, indent=2)}
+
+Return ONLY the summary text, nothing else."""
+
+        # Try LLM: Groq (production) → Ollama (local dev)
+        result = _llm_generate(prompt)
+        if result:
+            return result
+
+        # Fallback: simple constructed sentence
+        role = work_exp[0]["role"] if work_exp else "professional"
+        sk = ", ".join(skills[:4]) if skills else ""
+        return f"I am a {role}{' with skills in ' + sk if sk else ''}. I bring hands-on experience and a strong work ethic to every role I take on."
+
+
+
+
+# Singleton
 summarizer_service = SummarizerService()

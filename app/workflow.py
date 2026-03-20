@@ -233,7 +233,7 @@ def match_job_against_all_candidates(db: Session, job: DBJob):
     candidates = db.query(DBCandidate).all()
     
     # Clear existing matches for this job (optional, but keeps it clean)
-    db.query(DBMatch).filter(DBMatch.jobId == job.id).filter(DBMatch.applicationId == None).delete()
+    db.query(DBMatch).filter(DBMatch.jobId == job.id).delete()
     
     jd_description = str(job.description) if job.description else str(job.title)
     raw_skills = job.requiredSkills
@@ -306,18 +306,12 @@ def score_pair(db: Session, candidate: DBCandidate, job: DBJob, application_id: 
         candidate_skills=c_skills
     )
     
-    # Check for existing match for this application
-    match = None
-    if application_id:
-        match = db.query(DBMatch).filter(DBMatch.applicationId == application_id).first()
-        
-    if not match:
-        match = DBMatch(
-            candidateId=candidate.id,
-            jobId=job.id,
-            applicationId=application_id
-        )
-        db.add(match)
+    # Create a new match row
+    match = DBMatch(
+        candidateId=candidate.id,
+        jobId=job.id,
+    )
+    db.add(match)
         
     match.overallScore = float(res["score"])
     match.matchedSkills = res["matched_skills"]
@@ -328,15 +322,94 @@ def score_pair(db: Session, candidate: DBCandidate, job: DBJob, application_id: 
     db.refresh(match)
     return match
 
+
+def score_from_s3_and_job(
+    db: Session,
+    s3_key: str,
+    job_id: int,
+) -> Dict[str, Any]:
+    """
+    Score a resume (from S3) against a job (from DB).
+    Inputs: s3_key + job_id only.
+    Safe for concurrent use — each request has its own DB session.
+    """
+    # ── Step 1: Parse resume from S3 ──────────────────────────────────────
+    parsed_data = parse_only(s3_key)
+    resume_text = parsed_data.get("_raw_text", "") or ""
+
+    # ── Step 2: Fetch job ──────────────────────────────────────────────────
+    job = db.query(DBJob).filter(DBJob.id == job_id).first()
+    if not job:
+        raise ValueError(f"Job with id={job_id} not found")
+
+    required_skills: List[str] = []
+    raw_rs = job.requiredSkills
+    if isinstance(raw_rs, list):
+        required_skills = [str(s) for s in raw_rs if s]
+
+    responsibilities: List[str] = []
+    raw_resp = job.responsibilities
+    if isinstance(raw_resp, list):
+        responsibilities = [str(r) for r in raw_resp if r]
+
+    # ── Step 3: Multi-factor score ─────────────────────────────────────────
+    result = engine.score_resume_against_job(
+        parsed_json         = parsed_data,
+        resume_text         = resume_text,
+        required_skills     = required_skills,
+        exp_min             = job.experienceMin,
+        exp_max             = job.experienceMax,
+        job_description     = str(job.description or job.title or ""),
+        job_responsibilities= responsibilities,
+    )
+
+    # ── Step 4: Persist to matches table ──────────────────────────────────
+    match = DBMatch(
+        candidateId  = None,
+        jobId        = job_id,
+    )
+    db.add(match)
+
+    match.jobMatchScore      = float(result["jobMatchScore"])
+    match.matchedSkillsList  = result["matchedSkillsList"]
+    match.overallScore       = float(result["jobMatchScore"])
+    match.matchedSkills      = result["matchedSkillsList"]
+    match.recommendation     = result["recommendation"]
+    match.breakdown          = result["breakdown"]
+    match.status             = "COMPLETED"
+
+    db.commit()
+    db.refresh(match)
+
+    # ── Step 5: Return response ────────────────────────────────────────────
+    return {
+        "matchId":       match.id,
+        "jobId":         job_id,
+        "s3Key":         s3_key,
+        "jobMatchScore": result["jobMatchScore"],
+        "matchedSkills": result["matchedSkillsList"],
+        "missingSkills": result["missingSkills"],
+        "totalRequired": result["totalRequired"],
+        "recommendation":result["recommendation"],
+        "breakdown":     result["breakdown"],
+    }
+
 def generate_job_summary_from_text(text: str) -> str:
-    """
-    Summarizes raw JD text for the 'Summarize with AI' form feature.
-    """
+    """Legacy text-based JD summarizer — kept for backward compatibility."""
     from app.summarizer_service import summarizer_service
     if not text:
         return ""
-    # Use the existing extractive summarizer
     return summarizer_service.summarize(text, max_length=150)
+
+
+def generate_job_summary_from_profile(job_data) -> str:
+    """
+    Generate a natural AI-quality job summary from a structured JobProfile.
+    Uses all available fields: title, description, responsibilities, salary,
+    experience level, location, skills, work auth, etc.
+    """
+    from app.summarizer_service import generate_job_summary
+    return generate_job_summary(job_data)
 
 def run_matching() -> int:
     """
@@ -397,27 +470,25 @@ def get_recommendations(db: Session, target_id: int, for_candidate: bool = True)
     try:
         if for_candidate:
             rows = db.execute(
-                sql_text("SELECT id, \"candidateId\", \"jobId\", \"applicationId\", \"overallScore\", \"matchedSkills\", recommendation, status FROM matches WHERE \"candidateId\" = :tid ORDER BY \"overallScore\" DESC"),
+                sql_text('SELECT id, "candidateId", "jobId", "overallScore", "matchedSkills", recommendation, status FROM matches WHERE "candidateId" = :tid ORDER BY "overallScore" DESC'),
                 {"tid": target_id}
             ).fetchall()
         else:
             rows = db.execute(
-                sql_text("SELECT id, \"candidateId\", \"jobId\", \"applicationId\", \"overallScore\", \"matchedSkills\", recommendation, status FROM matches WHERE \"jobId\" = :tid ORDER BY \"overallScore\" DESC"),
+                sql_text('SELECT id, "candidateId", "jobId", "overallScore", "matchedSkills", recommendation, status FROM matches WHERE "jobId" = :tid ORDER BY "overallScore" DESC'),
                 {"tid": target_id}
             ).fetchall()
         
-        # Build lightweight objects matching DBMatch attribute access
         result = []
         for r in rows:
             m = DBMatch()
             m.id = r[0]
             m.candidateId = r[1]
             m.jobId = r[2]
-            m.applicationId = r[3]
-            m.overallScore = r[4]
-            m.matchedSkills = r[5] or []
-            m.recommendation = r[6]
-            m.status = r[7] or "COMPLETED"
+            m.overallScore = r[3]
+            m.matchedSkills = r[4] or []
+            m.recommendation = r[5]
+            m.status = r[6] or "COMPLETED"
             result.append(m)
         return result
     except Exception:

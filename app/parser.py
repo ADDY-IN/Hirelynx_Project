@@ -1,185 +1,266 @@
+"""
+Resume Parser — Groq-First
+==========================
+Primary extraction: Groq LLM (llama-3.3-70b-versatile)
+Fallback:          Regex for email + phone only
+
+~150 lines. No NER. No blocklists. No scoring.
+"""
 import re
-from typing import List, Dict, Any, Optional
+import json
+import logging
+from typing import Any, Dict, List, Optional
+
 from app.models import PersonalDetails, Education, WorkExperience, Skill, Project
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Groq client — loaded lazily, once
+# ---------------------------------------------------------------------------
+_groq_client = None
+
+def _get_groq_client():
+    global _groq_client
+    if _groq_client is not None:
+        return _groq_client
+    try:
+        from groq import Groq
+        from app.config import settings
+        if not settings.GROQ_API_KEY:
+            logger.warning("GROQ_API_KEY not set — parser will return empty fields.")
+            return None
+        _groq_client = Groq(api_key=settings.GROQ_API_KEY)
+        return _groq_client
+    except Exception as e:
+        logger.error(f"Failed to initialize Groq client: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# The single prompt — everything extracted in one call
+# ---------------------------------------------------------------------------
+_SYSTEM_PROMPT = """You are a precise resume data extractor. 
+Extract information from resumes and return ONLY valid JSON — no markdown, no explanation, no code blocks.
+If a field is missing or unclear, use an empty string "" or empty array [].
+Never invent or assume information not present in the resume."""
+
+_USER_PROMPT_TEMPLATE = """Extract resume data and return this exact JSON structure:
+
+{{
+  "firstName": "",
+  "lastName": "",
+  "phone": "",
+  "city": "",
+  "province": "",
+  "country": "",
+  "workType": "",
+  "skills": [],
+  "education": [
+    {{
+      "degree": "",
+      "institution": "",
+      "fieldOfStudy": "",
+      "startDate": "",
+      "endDate": ""
+    }}
+  ],
+  "workExperience": [
+    {{
+      "companyName": "",
+      "role": "",
+      "startDate": "",
+      "endDate": "",
+      "currentlyWorking": false,
+      "responsibilities": []
+    }}
+  ],
+  "projects": [
+    {{
+      "title": "",
+      "tools": [],
+      "summary": ""
+    }}
+  ],
+  "summary": ""
+}}
+
+Rules:
+- firstName / lastName: candidate's real name only — NEVER a city, job title, or address
+- skills: list every skill/technology mentioned, as short strings (e.g. "Python", "React", "SQL")
+- workType: one of "REMOTE", "HYBRID", "ON_SITE", or "" if not mentioned
+- currentlyWorking: true only if "present", "current", or "ongoing" appears in that job entry
+- province: use the 2-letter abbreviation for Canadian provinces (ON, BC, AB, QC, etc.)
+- summary: first 2-3 sentences summarizing the candidate's professional profile
+- Return empty string "" for any missing field, NOT null
+
+RESUME TEXT:
+{raw_text}"""
+
+
+# ---------------------------------------------------------------------------
+# Regex helpers (no API cost for these)
+# ---------------------------------------------------------------------------
+def _extract_email(text: str) -> Optional[str]:
+    m = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text)
+    return m.group(0) if m else None
+
+
+def _extract_phone(text: str) -> Optional[str]:
+    """Extract phone number. Requires 8+ digits. Rejects date patterns like 2021-2023."""
+    # Reject pure year-range patterns first
+    cleaned = re.sub(r"\b(19|20)\d{2}\s*[-–]\s*(19|20)\d{2}\b", "", text)
+    cleaned = re.sub(r"\b(19|20)\d{2}\b", "", cleaned)  # remove standalone years too
+
+    # Try international format
+    m = re.search(
+        r"(\+?\d{1,3}[\s\-.])?(\(?\d{2,4}\)?[\s\-.])?(\d{3,5}[\s\-\.]\d{3,5}([\s\-\.]\d{2,4})?)",
+        cleaned,
+    )
+    if m and len(re.sub(r"\D", "", m.group(0))) >= 8:
+        return m.group(0).strip()
+    # 10-digit solid number fallback
+    m = re.search(r"\b\d{10}\b", cleaned)
+    return m.group(0) if m else None
+
+
+
+# ---------------------------------------------------------------------------
+# Main parser
+# ---------------------------------------------------------------------------
+def _call_groq(raw_text: str) -> Dict[str, Any]:
+    """Send resume text to Groq, return parsed dict."""
+    client = _get_groq_client()
+    if not client:
+        return {}
+
+    # Cap text to keep within model context and reduce latency
+    text_chunk = raw_text[:5000]
+    prompt = _USER_PROMPT_TEMPLATE.format(raw_text=text_chunk)
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.0,       # deterministic
+            max_tokens=2048,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Groq returned invalid JSON: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Groq API call failed: {e}")
+        return {}
+
+
 class ResumeParser:
-    # Expanded skill list with normalization mapping if needed, 
-    # but for now we just use upper() as requested.
-    SKILL_DB = [
-        "python", "javascript", "typescript", "java", "c++", "c#", "ruby", "php", "swift", "kotlin", "go", "rust",
-        "sql", "nosql", "postgresql", "mysql", "mongodb", "redis", "cassandra", "elasticsearch",
-        "fastapi", "flask", "django", "nodejs", "react", "angular", "vue", "nextjs", "express", "spring boot",
-        "docker", "kubernetes", "aws", "azure", "gcp", "terraform", "ansible", "jenkins", "git", "github", "linux",
-        "machine learning", "deep learning", "nlp", "pytorch", "tensorflow", "scikit-learn", "pandas", "numpy",
-        "rest api", "graphql", "kafka", "rabbitmq", "microservices", "unit testing", "ci/cd", "agile",
-        "devops", "cicd", "shell", "bash", "cybersecurity", "compliance", "sonar qube", "fortify", "jira"
-    ]
-
-    @staticmethod
-    def clean_resume_text(text: str) -> str:
-        """
-        Aggressive cleaning for parsing logic.
-        """
-        # Remove extra symbols but keep email/phone related ones
-        text = re.sub(r"[^\w\s@.+:/-]", " ", text)
-        # Normalize spaces
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
-
-    @staticmethod
-    def split_sections(text: str) -> Dict[str, str]:
-        """
-        Core Fix: Capture content between headers using non-greedy regex.
-        """
-        sections = {}
-        patterns = {
-            "education": r"education(.*?)(experience|projects|skills|summary|contact|$)",
-            "experience": r"experience(.*?)(education|projects|skills|summary|contact|$)",
-            "projects": r"projects(.*?)(education|experience|skills|summary|contact|$)",
-            "skills": r"skills(.*?)(education|experience|projects|summary|contact|$)"
-        }
-
-        for key, pattern in patterns.items():
-            match = re.search(pattern, text, re.I | re.S)
-            if match:
-                sections[key] = match.group(1).strip()
-        return sections
-
-    @staticmethod
-    def extract_email(text: str) -> Optional[str]:
-        match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", text)
-        return match.group(0) if match else None
-
-    @staticmethod
-    def extract_phone(text: str) -> Optional[str]:
-        # Match 10-digit number
-        match = re.search(r"\b\d{10}\b", text)
-        return match.group(0) if match else None
-
-    @staticmethod
-    def extract_name(text: str) -> Dict[str, str]:
-        """Extract first and last name from the first few lines."""
-        all_lines = text.split('\n')
-        lines = all_lines[:10] if len(all_lines) >= 10 else all_lines
-        for line in lines:
-            line = line.strip()
-            # Basic heuristic: 2-3 words, no numbers, often at the start
-            if 3 < len(line) < 30 and not re.search(r'\d', line):
-                parts = line.split()
-                if len(parts) >= 2:
-                    return {"firstName": parts[0], "lastName": " ".join(parts[1:])}
-        return {"firstName": "", "lastName": ""}
-
-    @staticmethod
-    def extract_location(text: str) -> Dict[str, str]:
-        """Extract city and province/state."""
-        # Simple list for Canada/India as requested in screens
-        provinces = ["ontario", "bc", "quebec", "alberta", "up", "delhi", "haryana", "maharashtra", "karnataka"]
-        cities = ["toronto", "vancouver", "ottawa", "ghaziabad", "noida", "delhi", "mumbai", "bangalore", "gurgaon"]
-        
-        found_city = ""
-        found_province = ""
-        
-        text_low = text.lower()
-        for city in cities:
-            if re.search(rf'\b{re.escape(city)}\b', text_low):
-                found_city = city.capitalize()
-                break
-        for prov in provinces:
-            if re.search(rf'\b{re.escape(prov)}\b', text_low):
-                found_province = prov.upper()
-                break
-        return {"city": found_city, "province": found_province}
-
-    @staticmethod
-    def extract_skills(text: str) -> List[Skill]:
-        text_lower = text.lower()
-        found_skills = set()
-        for skill in ResumeParser.SKILL_DB:
-            pattern = rf'(?i)\b{re.escape(skill)}\b'
-            if re.search(pattern, text_lower):
-                # Normalize to Upper as requested
-                found_skills.add(skill.upper())
-        return [Skill(name=s, level="Found") for s in sorted(list(found_skills))]
-
-    @staticmethod
-    def extract_education(text: str) -> List[Education]:
-        """
-        Targeted extraction for education levels.
-        """
-        if not text:
-            return []
-            
-        degrees = {
-            "mca": "Master of Computer Applications",
-            "bca": "Bachelor of Computer Applications",
-            "btech": "B.Tech",
-            "mtech": "M.Tech",
-            "bachelor": "Bachelor's Degree",
-            "master": "Master's Degree",
-            "secondary": "Secondary Education"
-        }
-        
-        results = []
-        text_lower = text.lower()
-        
-        for code, full_name in degrees.items():
-            if code in text_lower:
-                results.append(Education(
-                    degree=full_name,
-                    # For institution, we try to take the text around it if it's not the header
-                    institution="Detected in record"
-                ))
-        return results
+    """
+    Clean, simple Groq-first resume parser.
+    Call ResumeParser.parse(raw_text) → structured dict.
+    """
 
     @staticmethod
     def parse(raw_text: str) -> Dict[str, Any]:
-        """
-        Production Parser: Segment -> Extract -> Structure.
-        """
-        # 1. Clean
-        cleaned = ResumeParser.clean_resume_text(raw_text)
-        
-        # 2. Segment
-        sections = ResumeParser.split_sections(cleaned)
-        
-        # 3. Extract Fields
-        name_info = ResumeParser.extract_name(raw_text)
-        email = ResumeParser.extract_email(raw_text)
-        phone = ResumeParser.extract_phone(raw_text)
-        loc_info = ResumeParser.extract_location(raw_text)
-        
-        # Skills from full text for better coverage
-        skills = ResumeParser.extract_skills(cleaned)
-        
-        # Education from its specific section
-        education = ResumeParser.extract_education(sections.get("education", ""))
-        
-        # Experience
-        exp_text = str(sections.get("experience", ""))
-        experience = []
-        if exp_text:
-            # Try to grab common fields
-            experience.append(WorkExperience(
-                companyName="Detected from History",
-                role="Professional Experience",
-                startDate="N/A",
-                responsibilities=[s.strip() for s in exp_text.split('.') if len(s.strip()) > 10][:5]
+        # Clean up null bytes and control characters
+        raw_text = raw_text.replace("\x00", "")
+        raw_text = "".join(c for c in raw_text if c.isprintable() or c in "\n\r\t")
+        raw_text = re.sub(r"\n{3,}", "\n\n", raw_text).strip()
+
+        # Extract email and phone via regex (fast, 100% reliable)
+        email = _extract_email(raw_text)
+        phone = _extract_phone(raw_text)
+
+        # Primary extraction via Groq LLM
+        data = _call_groq(raw_text)
+
+        # ── personalDetails ───────────────────────────────────────────────
+        pd = PersonalDetails(
+            firstName=data.get("firstName") or "",
+            lastName=data.get("lastName") or "",
+            phone=phone or data.get("phone") or "",
+            city=data.get("city") or "",
+            province=data.get("province") or "",
+            location=", ".join(filter(None, [
+                data.get("city") or "",
+                data.get("province") or "",
+                data.get("country") or "",
+            ])),
+        )
+
+        # ── skills ────────────────────────────────────────────────────────
+        raw_skills = data.get("skills") or []
+        skills = [
+            Skill(name=s.strip(), level="Found")
+            for s in raw_skills
+            if isinstance(s, str) and s.strip()
+        ]
+
+        # ── education ────────────────────────────────────────────────────
+        raw_edu = data.get("education") or []
+        education = []
+        for e in raw_edu:
+            if not isinstance(e, dict):
+                continue
+            deg = e.get("degree") or ""
+            if not deg:
+                continue
+            education.append(Education(
+                degree=deg,
+                institution=e.get("institution") or "Unknown Institution",
+                fieldOfStudy=e.get("fieldOfStudy") or None,
+                startDate=e.get("startDate") or None,
+                endDate=e.get("endDate") or None,
             ))
-            
+
+        # ── work experience ───────────────────────────────────────────────
+        raw_exp = data.get("workExperience") or []
+        work_experience = []
+        for w in raw_exp:
+            if not isinstance(w, dict):
+                continue
+            if not (w.get("companyName") or w.get("role")):
+                continue
+            resp = w.get("responsibilities") or []
+            work_experience.append(WorkExperience(
+                companyName=w.get("companyName") or None,
+                role=w.get("role") or None,
+                jobTitle=w.get("role") or None,
+                startDate=w.get("startDate") or None,
+                endDate=w.get("endDate") or None,
+                currentlyWorking=bool(w.get("currentlyWorking")),
+                responsibilities=[r for r in resp if isinstance(r, str) and r.strip()],
+            ))
+
+        # ── projects ──────────────────────────────────────────────────────
+        raw_proj = data.get("projects") or []
+        projects = []
+        for p in raw_proj:
+            if not isinstance(p, dict) or not p.get("title"):
+                continue
+            tools = p.get("tools") or []
+            projects.append(Project(
+                title=p["title"],
+                tools=[t for t in tools if isinstance(t, str) and t.strip()],
+                summary=p.get("summary") or None,
+            ))
+
         return {
-            "personalDetails": PersonalDetails(
-                firstName=name_info["firstName"],
-                lastName=name_info["lastName"],
-                phone=phone,
-                location=loc_info["city"], # Mapping to 'city' or general location
-                city=loc_info["city"],
-                province=loc_info["province"]
-            ).model_dump(),
+            "personalDetails": pd.model_dump(),
+            "workType": data.get("workType") or None,
+            "email": email,
             "skills": [s.model_dump() for s in skills],
             "education": [e.model_dump() for e in education],
-            "workExperience": [w.model_dump() for w in experience],
-            "email": email 
+            "workExperience": [w.model_dump() for w in work_experience],
+            "projects": [p.model_dump() for p in projects],
+            "summary": data.get("summary") or "",
         }
 
+
+# Singleton for backward compatibility
 parser = ResumeParser()

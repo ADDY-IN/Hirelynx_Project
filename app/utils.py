@@ -213,18 +213,30 @@ def extract_user_id_from_token(token: str) -> int:
 
 def extract_jd_keywords(description: str) -> List[str]:
     """
-    Extract meaningful keywords/phrases from JD using the predefined SKILL_DB.
+    Extract skills/keywords from a JD using regex-based tech keyword scanning.
+    Does not depend on the parser; works standalone.
     """
-    from app.parser import ResumeParser
-    
-    cleaned = clean_text(description).lower()
-    
-    found_skills = set()
-    for skill in ResumeParser.SKILL_DB:
-        # User requested uppercase skills, so we search dynamically
-        import re
-        pattern = rf'(?i)\b{re.escape(skill)}\b'
-        if re.search(pattern, cleaned):
-            found_skills.add(skill.upper())
-            
-    return sorted(list(found_skills))
+    if not description or len(description.strip()) < 10:
+        return []
+
+    # Common tech/skill terms to scan for in JD text
+    SKILL_PATTERNS = [
+        "python", "javascript", "typescript", "java", "c\\+\\+", "c#", "go", "rust",
+        "ruby", "swift", "kotlin", "react", "angular", "vue", "node\\.?js", "django",
+        "flask", "fastapi", "spring", "aws", "azure", "gcp", "docker", "kubernetes",
+        "terraform", "jenkins", "git", "linux", "sql", "postgresql", "mysql", "mongodb",
+        "redis", "elasticsearch", "kafka", "spark", "hadoop", "tableau", "power\\s?bi",
+        "machine learning", "deep learning", "nlp", "tensorflow", "pytorch",
+        "scikit.learn", "pandas", "numpy", "excel", "r\\b", "scala", "bash",
+    ]
+
+    cleaned = description.lower()
+    found = set()
+    for pattern in SKILL_PATTERNS:
+        if re.search(rf"(?i)\b{pattern}\b", cleaned):
+            # Normalize to display name
+            found.add(re.sub(r"\\[.+]|\\b|\\s\?|\\.", lambda m: (
+                "+" if "+" in m.group() else " " if "s" in m.group() else "."
+            ), pattern).strip().title())
+
+    return sorted(found)

@@ -27,37 +27,58 @@ class DBCandidate(Base):
 
 class DBJob(Base):
     __tablename__ = "jobs"
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True, nullable=False)
-    requiredSkills = Column(JSON, default=[]) 
-    description = Column(String, nullable=False) 
-    summary = Column(String, nullable=True)
-    companyName = Column(String, default="Unknown", nullable=False)
-    location = Column(String, default="Unknown", nullable=False)
-    employmentType = Column(String, default="FULL_TIME", nullable=False)
-    status = Column(String, default="PENDING", nullable=False)
-    experienceMin = Column(Float, default=0)
-    experienceMax = Column(Float, nullable=True)
-    education = Column(JSON, default=[])
-    responsibilities = Column(JSON, default=[])
-    job_s3_key = Column(String, nullable=True)
-    applicationsCount = Column(Integer, default=0, nullable=False)
-    isRemote = Column(Boolean, default=False, nullable=False)
-    currency = Column(String, default="USD", nullable=False)
-    requiresWorkAuthorization = Column(Boolean, default=False, nullable=False)
-    openToInternationalCandidates = Column(Boolean, default=False, nullable=False)
-    createdAt = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    id                           = Column(Integer, primary_key=True, index=True)
+    title                        = Column(String, nullable=False, index=True)
+    description                  = Column(String, nullable=True)
+    summary                      = Column(String, nullable=True)
+    companyName                  = Column(String, nullable=True)
+    location                     = Column(String, nullable=True)
+    category                     = Column(String, nullable=True)          # USER-DEFINED enum in DB
+    employmentType               = Column(String, nullable=True)
+    experienceLevel              = Column(String, nullable=True)          # USER-DEFINED enum
+    experienceMin                = Column(Float,  nullable=True)
+    experienceMax                = Column(Float,  nullable=True)
+    status                       = Column(String, nullable=True)          # USER-DEFINED enum
+    applicationsCount            = Column(Integer, default=0)
+    isRemote                     = Column(Boolean, default=False)
+    currency                     = Column(String, nullable=True)
+    compensationType             = Column(String, nullable=True)          # USER-DEFINED enum
+    salaryMin                    = Column(Integer, nullable=True)
+    salaryMax                    = Column(Integer, nullable=True)
+    responsibilities             = Column(JSON, default=[])
+    requiredSkills               = Column(JSON, default=[])
+    reportingTo                  = Column(String, nullable=True)
+    workSchedule                 = Column(String, nullable=True)          # USER-DEFINED enum
+    screeningQuestions           = Column(JSON, default=[])
+    requiresWorkAuthorization    = Column(Boolean, default=False)
+    openToInternationalCandidates= Column(Boolean, default=False)
+    employerId                   = Column(Integer, nullable=True)
+    approvedById                 = Column(Integer, nullable=True)
+    rejectedById                 = Column(Integer, nullable=True)
+    activatedById                = Column(Integer, nullable=True)
+    reOpenById                   = Column(Integer, nullable=True)
+    rejectReason                 = Column(String, nullable=True)
+    closedReason                 = Column(String, nullable=True)
+    approvedAt                   = Column(DateTime, nullable=True)
+    rejectedAt                   = Column(DateTime, nullable=True)
+    closedAt                     = Column(DateTime, nullable=True)
+    expiresAt                    = Column(DateTime, nullable=True)
+    activatedAt                  = Column(DateTime, nullable=True)
+    reOpenAt                     = Column(DateTime, nullable=True)
+    deletedAt                    = Column(DateTime, nullable=True)
+    createdAt                    = Column(DateTime, default=datetime.utcnow)
+    updatedAt                    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class DBMatch(Base):
     __tablename__ = "matches"
-    id = Column(Integer, primary_key=True, index=True)
-    candidateId = Column(Integer, ForeignKey("candidate_profiles.id"))
-    jobId = Column(Integer, ForeignKey("jobs.id"))
-    applicationId = Column(Integer, nullable=True) # NEW: link to the specific application
-    overallScore = Column(Float)
-    breakdown = Column(JSON, default={})
-    matchedSkills = Column(JSON, default=[])
+    id               = Column(Integer, primary_key=True, index=True)
+    candidateId      = Column(Integer, ForeignKey("candidate_profiles.id"), nullable=True)
+    jobId            = Column(Integer, ForeignKey("jobs.id"))
+    overallScore     = Column(Float, default=0.0)
+    jobMatchScore    = Column(Float, nullable=True)
+    breakdown        = Column(JSON, default={})
+    matchedSkills = Column(JSON, default=[])           # legacy
+    matchedSkillsList = Column(JSON, default=[])       # NEW: skills matched in this request
     recommendation = Column(String)
     status = Column(String, default="PENDING")
 
@@ -198,20 +219,59 @@ class JobProfile(BaseModel):
         from_attributes = True
         extra = "allow"
 
+class CandidateSearchFilters(BaseModel):
+    """Structured filters for the 'Search by Filter' tab."""
+    category:      Optional[str]       = None   # e.g. "IT", "Chef", "Plumber"
+    locations:     Optional[List[str]] = None   # e.g. ["Toronto", "Remote"]
+    skills:        Optional[List[str]] = None   # e.g. ["React", "Python"]
+    jobType:       Optional[List[str]] = None   # FULL_TIME, PART_TIME, CONTRACT, REMOTE, HYBRID
+    experienceMin: Optional[float]     = None   # slider min years
+    experienceMax: Optional[float]     = None   # slider max years
+    salaryMin:     Optional[float]     = None   # slider min monthly salary
+    salaryMax:     Optional[float]     = None   # slider max monthly salary
+    minMatchScore: Optional[float]     = 0.0    # filter by pre-computed jobMatchScore (0–100)
+
+    class Config:
+        extra = "allow"
+
+
+class CandidateSearchRequest(BaseModel):
+    """Request body for POST /v1/admin/candidates/search."""
+    mode:    str            = "filter"   # "filter" | "ai"
+    query:   Optional[str] = None        # text box (name, title, skills) OR AI natural language
+    filters: Optional[CandidateSearchFilters] = None
+    limit:   int            = 20
+
+    class Config:
+        extra = "allow"
+
+
+class ResumeMatchRequest(BaseModel):
+    """Request body for POST /v1/scoring/match-resume"""
+    s3_key: str
+    job_id: int
+
+
 class MatchScore(BaseModel):
     id: Optional[int] = None
-    candidateId: int
+    candidateId: Optional[int] = None
     jobId: int
     candidateToken: Optional[str] = None
     jobToken: Optional[str] = None
     applicationId: Optional[int] = None
-    overallScore: float
+    # Legacy
+    overallScore: float = 0.0
     matchPercentage: Optional[float] = None
     suitabilityScore: Optional[float] = None
     breakdown: Dict[str, Any] = {}
     matchedSkills: List[str] = []
     recommendation: str
     status: str = 'PENDING'
+    # New rich fields
+    jobMatchScore: Optional[float] = None
+    matchedSkillsList: List[str] = []
+    missingSkills: List[str] = []
+    totalRequiredSkills: Optional[int] = None
 
     class Config:
         from_attributes = True

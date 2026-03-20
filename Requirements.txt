@@ -15,3 +15,5 @@ sentence-transformers
 torch
 sqlalchemy
 psycopg2-binary
+spacy
+groq
