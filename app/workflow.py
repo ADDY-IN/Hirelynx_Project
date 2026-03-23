@@ -352,8 +352,8 @@ def score_from_s3_and_job(
     if isinstance(raw_resp, list):
         responsibilities = [str(r) for r in raw_resp if r]
 
-    # ── Step 3: Multi-factor score ─────────────────────────────────────────
-    result = engine.score_resume_against_job(
+    # ── Step 3: AI-powered score (Groq LLM, falls back to rule-based) ─────
+    result = engine.score_resume_against_job_ai(
         parsed_json         = parsed_data,
         resume_text         = resume_text,
         required_skills     = required_skills,
@@ -361,6 +361,7 @@ def score_from_s3_and_job(
         exp_max             = job.experienceMax,
         job_description     = str(job.description or job.title or ""),
         job_responsibilities= responsibilities,
+        job_title           = str(job.title or ""),
     )
 
     # ── Step 4: Persist to matches table ──────────────────────────────────

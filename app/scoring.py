@@ -254,6 +254,178 @@ class ScoringEngine:
         }
 
     # ----------------------------------------------------------------
+    # AI: Groq LLM scoring (primary) with rule-based fallback
+    # ----------------------------------------------------------------
+
+    def _groq_score(
+        self,
+        resume_text: str,
+        job_description: str,
+        required_skills: List[str],
+        exp_min: Optional[float],
+        exp_max: Optional[float],
+        job_responsibilities: List[str],
+        job_title: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Call Groq LLM to score a resume against a job.
+        Returns parsed result dict on success, None on failure.
+        """
+        try:
+            from groq import Groq
+            from app.config import settings
+            import json as _json
+
+            api_key = getattr(settings, "GROQ_API_KEY", None)
+            if not api_key:
+                logger.warning("GROQ_API_KEY not set — skipping AI scoring")
+                return None
+
+            # Truncate resume/JD to avoid token limits (~6000 chars each)
+            resume_snippet = resume_text[:6000].strip()
+            jd_snippet = job_description[:3000].strip()
+            skills_str = ", ".join(required_skills) if required_skills else "Not specified"
+            exp_str = (
+                f"{exp_min}–{exp_max} years" if exp_min and exp_max else
+                f"{exp_min}+ years" if exp_min else
+                f"up to {exp_max} years" if exp_max else
+                "Not specified"
+            )
+            resp_str = "\n".join(f"- {r}" for r in job_responsibilities[:15]) or "Not specified"
+
+            prompt = f"""You are an expert recruiter and HR analyst. Your job is to score how well this candidate's resume matches the job posting.
+
+Be STRICT and REALISTIC. Differentiate candidates based on actual skill alignment, experience depth, and role fit.
+Do NOT give scores above 80 unless the candidate is a near-perfect match.
+
+JOB TITLE: {job_title or "Not specified"}
+JOB DESCRIPTION:
+{jd_snippet}
+
+REQUIRED SKILLS: {skills_str}
+EXPERIENCE REQUIRED: {exp_str}
+KEY RESPONSIBILITIES:
+{resp_str}
+
+CANDIDATE RESUME:
+{resume_snippet}
+
+Return ONLY valid JSON with no markdown, no extra text — just the raw JSON object:
+{{
+  "jobMatchScore": <integer 0-100>,
+  "matchedSkills": ["skill1", "skill2"],
+  "missingSkills": ["skill3", "skill4"],
+  "breakdown": {{
+    "skillsScore": <integer 0-100>,
+    "experienceScore": <integer 0-100>,
+    "educationScore": <integer 0-100>,
+    "overallReasoning": "<1-2 sentence explanation of the score>"
+  }},
+  "recommendation": "<one of: Excellent Match, Strong Match, Good Match, Potential Match, Low Match>"
+}}"""
+
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,   # low temp = consistent, deterministic scoring
+                max_tokens=512,
+            )
+
+            raw = response.choices[0].message.content.strip()
+
+            # Strip markdown fences if model adds them despite instructions
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+
+            data = _json.loads(raw)
+
+            score = float(data.get("jobMatchScore", 0))
+            matched = data.get("matchedSkills", [])
+            missing = data.get("missingSkills", [])
+            breakdown = data.get("breakdown", {})
+            recommendation = data.get("recommendation", "")
+
+            # Validate recommendation label
+            valid_labels = {"Excellent Match", "Strong Match", "Good Match", "Potential Match", "Low Match"}
+            if recommendation not in valid_labels:
+                recommendation = (
+                    "Excellent Match" if score >= 85 else
+                    "Strong Match"    if score >= 70 else
+                    "Good Match"      if score >= 55 else
+                    "Potential Match" if score >= 40 else
+                    "Low Match"
+                )
+
+            logger.info(f"Groq scoring complete: score={score}, recommendation={recommendation}")
+
+            return {
+                "score":             score,
+                "jobMatchScore":     score,
+                "matchedSkillsList": matched,
+                "missingSkills":     missing,
+                "totalRequired":     len(required_skills),
+                "recommendation":    recommendation,
+                "breakdown": {
+                    "skillsScore":      breakdown.get("skillsScore", 0),
+                    "experienceScore":  breakdown.get("experienceScore", 0),
+                    "educationScore":   breakdown.get("educationScore", 0),
+                    "overallReasoning": breakdown.get("overallReasoning", ""),
+                    "scoredBy":         "groq-llm",
+                },
+            }
+
+        except Exception as e:
+            logger.warning(f"Groq scoring error: {e}")
+            return None
+
+    def score_resume_against_job_ai(
+        self,
+        parsed_json: Dict,
+        resume_text: str,
+        required_skills: List[str],
+        exp_min: Optional[float],
+        exp_max: Optional[float],
+        job_description: str,
+        job_responsibilities: List[str],
+        job_title: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Primary entry-point for on-demand resume scoring.
+        Uses Groq LLM for intelligent, context-aware scoring.
+        Automatically falls back to rule-based scoring if Groq is unavailable.
+        """
+        result = self._groq_score(
+            resume_text=resume_text,
+            job_description=job_description,
+            required_skills=required_skills,
+            exp_min=exp_min,
+            exp_max=exp_max,
+            job_responsibilities=job_responsibilities,
+            job_title=job_title,
+        )
+        if result:
+            return result
+
+        # Fallback: rule-based multi-factor scoring
+        logger.info("Falling back to rule-based scoring")
+        fallback = self.score_resume_against_job(
+            parsed_json=parsed_json,
+            resume_text=resume_text,
+            required_skills=required_skills,
+            exp_min=exp_min,
+            exp_max=exp_max,
+            job_description=job_description,
+            job_responsibilities=job_responsibilities,
+        )
+        # Tag the fallback so it's identifiable in the response
+        fallback.setdefault("breakdown", {})["scoredBy"] = "rule-based-fallback"
+        return fallback
+
+    # ----------------------------------------------------------------
     # LEGACY: kept for backward compatibility with batch-matching
     # ----------------------------------------------------------------
 

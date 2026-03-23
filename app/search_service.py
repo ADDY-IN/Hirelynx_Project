@@ -72,6 +72,21 @@ def _skill_names(skills_json: Any) -> List[str]:
     return names
 
 
+def _extract_location_phone(parsed_json: Any):
+    """Extract location string and phone from resumeParsedJson.personalDetails."""
+    if not isinstance(parsed_json, dict):
+        return None, None
+    pd = parsed_json.get("personalDetails") or {}
+    if not isinstance(pd, dict):
+        return None, None
+    city     = (pd.get("city") or "").strip()
+    province = (pd.get("province") or "").strip()
+    loc_gen  = (pd.get("location") or "").strip()
+    location = ", ".join(filter(None, [city, province])) or loc_gen or None
+    phone    = (pd.get("phone") or "").strip() or None
+    return location, phone
+
+
 def _build_card(row, extra: Dict) -> Dict[str, Any]:
     """Build the uniform candidate response card from a DB row."""
     (user_id, email, first_name, last_name, avatar, profile_pic,
@@ -79,9 +94,10 @@ def _build_card(row, extra: Dict) -> Dict[str, Any]:
      profile_id, skills, education, work_exp,
      parse_status, parsed_json, job_match_score, matched_skills_list) = row
 
-    full_name     = f"{first_name or ''} {last_name or ''}".strip() or None
-    skill_list    = _skill_names(skills)
-    years_exp     = _extract_years(work_exp)
+    full_name            = f"{first_name or ''} {last_name or ''}".strip() or None
+    skill_list           = _skill_names(skills)
+    years_exp            = _extract_years(work_exp)
+    location, phone      = _extract_location_phone(parsed_json)
 
     card = {
         "userId":           user_id,
@@ -95,6 +111,8 @@ def _build_card(row, extra: Dict) -> Dict[str, Any]:
         "isEmailVerified":  is_verified,
         "status":           status,
         "createdAt":        str(created_at) if created_at else None,
+        "location":         location,
+        "phone":            phone,
         "skills":           skill_list,
         "education":        education or [],
         "workExperience":   work_exp or [],
@@ -281,25 +299,44 @@ class SearchService:
                     continue
                 # If no employment type data at all, include the candidate
 
-            # ── Text query filter (name / email / skill match) ───────
-            relevance = 1.0   # base relevance for filter mode
+            # ── Text query filter (name / email / skill / location / phone) ─
+            relevance = 1.0
             if query_low:
-                text_blob = f"{full_name} {email_str} {' '.join(skill_lower)}"
-                if query_low not in text_blob and not any(
-                    word in text_blob for word in query_low.split()
-                ):
-                    continue   # query provided but no match found at all
-                # Boost relevance for name/email exact matches
+                # Build location text for matching
+                candidate_loc_str = ""
+                candidate_phone   = ""
+                if parsed_json and isinstance(parsed_json, dict):
+                    pd_info = parsed_json.get("personalDetails") or {}
+                    if isinstance(pd_info, dict):
+                        candidate_loc_str = (
+                            f"{pd_info.get('city','')} {pd_info.get('province','')} "
+                            f"{pd_info.get('location','')}"
+                        ).lower().strip()
+                        candidate_phone = (pd_info.get("phone") or "").lower()
+
+                text_blob = (
+                    f"{full_name} {email_str} {' '.join(skill_lower)} "
+                    f"{candidate_loc_str} {candidate_phone}"
+                )
+
+                # Match any word of the query against the blob (OR logic per word)
+                words = [w for w in query_low.split() if len(w) > 1]
+                if not any(word in text_blob for word in words):
+                    continue
+
+                # Boost relevance for closer matches
                 if query_low in full_name or query_low in email_str:
                     relevance = 2.0
+                elif any(query_low in field for field in [candidate_loc_str, candidate_phone]):
+                    relevance = 1.5
 
             card = _build_card(row, {"relevance": relevance})
             results.append(card)
 
-        # Sort: by relevance (text query boost), then by jobMatchScore desc
+        # Sort: by relevance (text query boost), then by jobMatchScore
         results.sort(
             key=lambda c: (c.get("relevance", 1.0), c.get("jobMatchScore") or 0.0),
-            reverse=True
+            reverse=True,
         )
         return results[:limit]
 
