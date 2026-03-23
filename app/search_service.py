@@ -228,7 +228,7 @@ class SearchService:
         category       = (f.get("category") or "").strip().lower()
         locations      = [l.strip().lower() for l in (f.get("locations") or []) if l]
         req_skills     = [s.strip().lower() for s in (f.get("skills") or []) if s]
-        job_types      = [j.strip().upper() for j in (f.get("jobType") or []) if j]
+        job_types      = [j.strip().upper().replace("-", "_") for j in (f.get("jobType") or []) if j]
         exp_min        = f.get("experienceMin")
         exp_max        = f.get("experienceMax")
         min_score      = float(f.get("minMatchScore") or 0.0)
@@ -254,14 +254,15 @@ class SearchService:
                     continue
 
             # ── Category filter ──────────────────────────────────────
-            # Category is matched against the candidate's skills / parsed role
             if category:
                 category_hit = any(category in s for s in skill_lower)
-                if not category_hit and parsed_json and isinstance(parsed_json, dict):
+                if not category_hit:
+                    # Fallback: check work_exp DB column (already available in row)
                     role_text = ""
-                    for exp in (parsed_json.get("workExperience") or []):
-                        if isinstance(exp, dict):
-                            role_text += f" {exp.get('role','')} {exp.get('jobTitle','')}".lower()
+                    if work_exp and isinstance(work_exp, list):
+                        for exp in work_exp:
+                            if isinstance(exp, dict):
+                                role_text += f" {exp.get('role','')} {exp.get('jobTitle','')}".lower()
                     category_hit = category in role_text
                 if not category_hit:
                     continue
