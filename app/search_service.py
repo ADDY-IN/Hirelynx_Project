@@ -72,12 +72,28 @@ def _skill_names(skills_json: Any) -> List[str]:
     return names
 
 
+def _get_personal_details(parsed_json: Any) -> dict:
+    """
+    Get personalDetails from resumeParsedJson.
+    Handles two storage shapes:
+      - flat:    { "personalDetails": {...}, ... }
+      - nested:  { "structuredData": { "personalDetails": {...} }, ... }
+    """
+    if not isinstance(parsed_json, dict):
+        return {}
+    # Try top-level first
+    pd = parsed_json.get("personalDetails")
+    if not pd:
+        # Fall back to structuredData nesting
+        structured = parsed_json.get("structuredData") or {}
+        pd = structured.get("personalDetails") if isinstance(structured, dict) else None
+    return pd if isinstance(pd, dict) else {}
+
+
 def _extract_location_phone(parsed_json: Any):
     """Extract location string and phone from resumeParsedJson.personalDetails."""
-    if not isinstance(parsed_json, dict):
-        return None, None
-    pd = parsed_json.get("personalDetails") or {}
-    if not isinstance(pd, dict):
+    pd = _get_personal_details(parsed_json)
+    if not pd:
         return None, None
     city     = (pd.get("city") or "").strip()
     province = (pd.get("province") or "").strip()
@@ -250,17 +266,14 @@ class SearchService:
                 if not category_hit:
                     continue
 
-            # ── Location filter ──────────────────────────────────────
+            # ── Location filter ───────────────────────────────────!
             if locations:
-                candidate_location = ""
-                if parsed_json and isinstance(parsed_json, dict):
-                    pd = parsed_json.get("personalDetails") or {}
-                    if isinstance(pd, dict):
-                        candidate_location = (
-                            f"{pd.get('city','')} {pd.get('province','')} {pd.get('location','')}".lower()
-                        )
+                pd_loc = _get_personal_details(parsed_json)
+                candidate_location = (
+                    f"{pd_loc.get('city','')} {pd_loc.get('province','')} "
+                    f"{pd_loc.get('location','')}"
+                ).lower().strip()
                 if not any(loc in candidate_location or loc in email_str for loc in locations):
-                    # "Remote" is a special wildcard — any remote mention passes
                     remote_wanted = any("remote" in l for l in locations)
                     if not remote_wanted:
                         continue
@@ -302,17 +315,13 @@ class SearchService:
             # ── Text query filter (name / email / skill / location / phone) ─
             relevance = 1.0
             if query_low:
-                # Build location text for matching
-                candidate_loc_str = ""
-                candidate_phone   = ""
-                if parsed_json and isinstance(parsed_json, dict):
-                    pd_info = parsed_json.get("personalDetails") or {}
-                    if isinstance(pd_info, dict):
-                        candidate_loc_str = (
-                            f"{pd_info.get('city','')} {pd_info.get('province','')} "
-                            f"{pd_info.get('location','')}"
-                        ).lower().strip()
-                        candidate_phone = (pd_info.get("phone") or "").lower()
+                # Get personalDetails using the helper (handles flat + nested)
+                pd_info          = _get_personal_details(parsed_json)
+                candidate_loc_str = (
+                    f"{pd_info.get('city','')} {pd_info.get('province','')} "
+                    f"{pd_info.get('location','')}"
+                ).lower().strip()
+                candidate_phone = (pd_info.get("phone") or "").lower()
 
                 text_blob = (
                     f"{full_name} {email_str} {' '.join(skill_lower)} "
