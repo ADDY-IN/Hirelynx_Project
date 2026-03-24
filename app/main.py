@@ -74,22 +74,32 @@ async def smart_search_candidates(
     db: Session = Depends(get_db)
 ):
     """
-    Two-mode admin candidate search. Requires admin Bearer token.
+    Three-mode admin candidate search. Requires admin Bearer token.
 
     MODE: 'filter' (default)
       - Structured filters: category, locations, skills, jobType,
         experienceMin/Max, salaryMin/Max, minMatchScore
       - Optional 'query' for name / email / skill text matching
-      - minMatchScore filters on pre-computed jobMatchScore (NULL = include)
 
     MODE: 'ai'
       - Natural language 'query': 'python developer with 5 years in Toronto'
       - BERT semantic search ranked by relevance
 
-    Body: { "mode": "filter"|"ai", "query": "...", "filters": {...}, "limit": 20 }
+    MODE: 'suggestions'
+      - Returns dynamic AI-prompt chip strings built from live DB data
+      - Use 'limit' to control how many suggestions are returned (default 6)
+      - Response: { "suggestions": ["...", ...] }
+
+    Body: { "mode": "filter"|"ai"|"suggestions", "query": "...", "filters": {...}, "limit": 6 }
     """
     try:
         _ = extract_user_id_from_token(credentials.credentials)
+
+        if body.mode == "suggestions":
+            from app.search_service import SearchService as _SS
+            suggestions = _SS.get_suggestions(db, count=min(body.limit, 20))
+            return {"suggestions": suggestions}
+
         results = SearchService.smart_search(
             db      = db,
             mode    = body.mode,

@@ -90,9 +90,24 @@ def _get_personal_details(parsed_json: Any) -> dict:
     return pd if isinstance(pd, dict) else {}
 
 
-def _extract_location_phone(parsed_json: Any):
-    """Extract location string and phone from resumeParsedJson.personalDetails."""
+def _resolve_personal_details(parsed_json: Any, personal_details_col: Any = None) -> dict:
+    """
+    Best-effort resolution of personalDetails.
+    Priority:
+      1. resumeParsedJson (flat or nested under structuredData)
+      2. candidate_profiles.personalDetails column (direct JSON column)
+    This ensures phone / location are returned even when resumeParsedJson is NULL
+    (e.g. candidates whose resumes were parsed by the Node.js backend).
+    """
     pd = _get_personal_details(parsed_json)
+    if not pd and isinstance(personal_details_col, dict):
+        pd = personal_details_col
+    return pd if isinstance(pd, dict) else {}
+
+
+def _extract_location_phone(parsed_json: Any, personal_details_col: Any = None):
+    """Extract location string and phone — checks resumeParsedJson then personalDetails column."""
+    pd = _resolve_personal_details(parsed_json, personal_details_col)
     if not pd:
         return None, None
     city     = (pd.get("city") or "").strip()
@@ -108,12 +123,13 @@ def _build_card(row, extra: Dict) -> Dict[str, Any]:
     (user_id, email, first_name, last_name, avatar, profile_pic,
      is_verified, status, created_at,
      profile_id, skills, education, work_exp,
-     parse_status, parsed_json, job_match_score, matched_skills_list) = row
+     parse_status, personal_details_col, parsed_json,
+     job_match_score, matched_skills_list) = row
 
     full_name            = f"{first_name or ''} {last_name or ''}".strip() or None
     skill_list           = _skill_names(skills)
     years_exp            = _extract_years(work_exp)
-    location, phone      = _extract_location_phone(parsed_json)
+    location, phone      = _extract_location_phone(parsed_json, personal_details_col)
 
     card = {
         "userId":           user_id,
@@ -161,6 +177,7 @@ _CANDIDATE_SQL = text("""
         cp."education",
         cp."workExperience",
         cp."resumeParseStatus",
+        cp."personalDetails",
         cp."resumeParsedJson",
         m."jobMatchScore",
         m."matchedSkillsList"
@@ -239,7 +256,8 @@ class SearchService:
             (user_id, email, first_name, last_name, avatar, profile_pic,
              is_verified, status, created_at,
              profile_id, skills, education, work_exp,
-             parse_status, parsed_json, job_match_score, matched_skills_list) = row
+             parse_status, personal_details_col, parsed_json,
+             job_match_score, matched_skills_list) = row
 
             skill_names = _skill_names(skills)
             skill_lower = [s.lower() for s in skill_names]
@@ -267,9 +285,9 @@ class SearchService:
                 if not category_hit:
                     continue
 
-            # ── Location filter ───────────────────────────────────!
+            # ── Location filter ───────────────────────────────────
             if locations:
-                pd_loc = _get_personal_details(parsed_json)
+                pd_loc = _resolve_personal_details(parsed_json, personal_details_col)
                 candidate_location = (
                     f"{pd_loc.get('city','')} {pd_loc.get('province','')} "
                     f"{pd_loc.get('location','')}"
@@ -316,8 +334,8 @@ class SearchService:
             # ── Text query filter (name / email / skill / location / phone) ─
             relevance = 1.0
             if query_low:
-                # Get personalDetails using the helper (handles flat + nested)
-                pd_info          = _get_personal_details(parsed_json)
+                # Resolve personalDetails: resumeParsedJson first, then personalDetails column
+                pd_info          = _resolve_personal_details(parsed_json, personal_details_col)
                 candidate_loc_str = (
                     f"{pd_info.get('city','')} {pd_info.get('province','')} "
                     f"{pd_info.get('location','')}"
@@ -380,7 +398,8 @@ class SearchService:
             (user_id, email, first_name, last_name, avatar, profile_pic,
              is_verified, status, created_at,
              profile_id, skills, education, work_exp,
-             parse_status, parsed_json, job_match_score, matched_skills_list) = row
+             parse_status, personal_details_col, parsed_json,
+             job_match_score, matched_skills_list) = row
 
             skill_names = _skill_names(skills)
             skill_lower = [s.lower() for s in skill_names]
@@ -423,6 +442,109 @@ class SearchService:
 
         scored.sort(key=lambda c: c.get("aiScore", 0.0), reverse=True)
         return scored[:limit]
+
+    # ----------------------------------------------------------------
+    # SUGGESTIONS: dynamic AI-search prompt chips
+    # ----------------------------------------------------------------
+
+    @staticmethod
+    def get_suggestions(db: Session, count: int = 6) -> List[str]:
+        """
+        Build dynamic suggestion strings from live DB data.
+        Pulls top skills and top cities from candidate_profiles,
+        generates varied natural-language prompt strings, and
+        returns `count` randomly-sampled results.
+        """
+        import random
+
+        _SKILLS_SQL = text("""
+            SELECT elem->>'name' AS skill_name, COUNT(*) AS cnt
+            FROM candidate_profiles,
+                 jsonb_array_elements(
+                     CASE
+                         WHEN skills IS NOT NULL
+                          AND jsonb_typeof(skills::jsonb) = 'array'
+                         THEN skills::jsonb
+                         ELSE '[]'::jsonb
+                     END
+                 ) AS elem
+            WHERE skills IS NOT NULL
+              AND (elem->>'name') IS NOT NULL
+              AND (elem->>'name') <> ''
+            GROUP BY skill_name
+            ORDER BY cnt DESC
+            LIMIT 15
+        """)
+
+        _CITIES_SQL = text("""
+            SELECT
+                COALESCE(
+                    NULLIF(TRIM("personalDetails"->>'city'), ''),
+                    NULLIF(TRIM("personalDetails"->>'province'), '')
+                ) AS city,
+                COUNT(*) AS cnt
+            FROM candidate_profiles
+            WHERE "personalDetails" IS NOT NULL
+              AND COALESCE(
+                    NULLIF(TRIM("personalDetails"->>'city'), ''),
+                    NULLIF(TRIM("personalDetails"->>'province'), '')
+                  ) IS NOT NULL
+            GROUP BY city
+            ORDER BY cnt DESC
+            LIMIT 10
+        """)
+
+        try:
+            skill_rows = db.execute(_SKILLS_SQL).fetchall()
+            city_rows  = db.execute(_CITIES_SQL).fetchall()
+        except Exception as e:
+            logger.warning(f"Suggestions query failed: {e}")
+            return []
+
+        skills = [r[0] for r in skill_rows if r[0]]
+        cities  = [r[0] for r in city_rows  if r[0]]
+
+        if not skills:
+            return []
+
+        templates: List[str] = []
+
+        if cities:
+            for skill in skills[:8]:
+                city = random.choice(cities)
+                templates += [
+                    f"Find {skill} developers in {city}",
+                    f"Show me {skill} candidates from {city}",
+                    f"Find candidates with {skill} skills in {city}",
+                    f"Top {skill} professionals in {city}",
+                ]
+
+        for skill in skills[:10]:
+            exp = random.choice(["2+", "3+", "5+"])
+            templates += [
+                f"{skill} specialists with {exp} years experience",
+                f"Find experienced {skill} professionals",
+                f"Show me {skill} candidates available for remote work",
+                f"Find {skill} engineers open to relocation",
+            ]
+
+        if len(skills) >= 2:
+            pairs = list(zip(skills[:5], skills[5:10] or skills[:5]))
+            for s1, s2 in pairs:
+                templates.append(f"Candidates with both {s1} and {s2} experience")
+
+        for city in cities[:5]:
+            templates.append(f"Show all candidates located in {city}")
+
+        seen: set = set()
+        unique: List[str] = []
+        for t in templates:
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                unique.append(t)
+
+        random.shuffle(unique)
+        return unique[:count]
 
     # ----------------------------------------------------------------
     # LEGACY: kept for backward compatibility (old admin search endpoint)
