@@ -39,7 +39,9 @@ scoring_engine = ScoringEngine(weight=settings.SCORING_WEIGHT)
 # ---------------------------------------------------------------------------
 
 def _extract_years(work_exp: Any) -> float:
-    """Sum years of work experience from workExperience JSON."""
+    """Sum years of work experience from workExperience JSON.
+    Handles both full ISO dates (YYYY-MM-DD) and year-only values.
+    """
     total = 0.0
     if not isinstance(work_exp, list):
         return total
@@ -50,12 +52,30 @@ def _extract_years(work_exp: Any) -> float:
         start = str(exp.get("startDate", "") or "")
         end   = str(exp.get("endDate", "") or "")
         curr  = bool(exp.get("currentlyWorking", False))
-        sy = re.search(r"\b(20\d{2}|19\d{2})\b", start)
-        ey = re.search(r"\b(20\d{2}|19\d{2})\b", end)
-        if sy:
-            s_yr = int(sy.group(1))
-            e_yr = current_year if curr else (int(ey.group(1)) if ey else s_yr + 1)
-            total += max(0.0, float(e_yr - s_yr))
+
+        def _parse_decimal_year(s: str) -> float:
+            """Extract year as decimal from YYYY-MM-DD or YYYY string."""
+            s = s.strip()
+            # Full ISO date: YYYY-MM-DD
+            iso = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+            if iso:
+                return int(iso.group(1)) + (int(iso.group(2)) - 1) / 12.0
+            # Year only
+            yr = re.search(r"\b(20\d{2}|19\d{2})\b", s)
+            if yr:
+                return float(yr.group(1))
+            return 0.0
+
+        s_dec = _parse_decimal_year(start)
+        if s_dec == 0.0:
+            continue  # no parseable start date
+        if curr:
+            e_dec = current_year
+        else:
+            e_dec = _parse_decimal_year(end)
+            if e_dec == 0.0:
+                e_dec = s_dec + 1.0  # assume 1-year role if no end date
+        total += max(0.0, e_dec - s_dec)
     return round(total, 1)
 
 
@@ -248,6 +268,8 @@ class SearchService:
         job_types      = [j.strip().upper().replace("-", "_") for j in (f.get("jobType") or []) if j]
         exp_min        = f.get("experienceMin")
         exp_max        = f.get("experienceMax")
+        salary_min     = f.get("salaryMin")
+        salary_max     = f.get("salaryMax")
         min_score      = float(f.get("minMatchScore") or 0.0)
         query_low      = (query or "").strip().lower()
 
@@ -271,17 +293,49 @@ class SearchService:
                 if float(job_match_score) < min_score:
                     continue
 
-            # ── Category filter ──────────────────────────────────────
+            # ── Category filter ─────────────────────────────────────────────
+            # Uses a keyword map so "IT" matches developers, engineers, etc.
+            # Falls back to work experience roles, then resume text.
             if category:
-                category_hit = any(category in s for s in skill_lower)
-                if not category_hit:
-                    # Fallback: check work_exp DB column (already available in row)
-                    role_text = ""
-                    if work_exp and isinstance(work_exp, list):
-                        for exp in work_exp:
-                            if isinstance(exp, dict):
-                                role_text += f" {exp.get('role','')} {exp.get('jobTitle','')}".lower()
-                    category_hit = category in role_text
+                _CATEGORY_KEYWORDS = {
+                    "it": [
+                        "developer", "engineer", "software", "web", "frontend", "backend",
+                        "fullstack", "full stack", "devops", "cloud", "data", "machine learning",
+                        "javascript", "python", "java", "react", "node", "angular", "vue",
+                        "typescript", "sql", "database", "api", "mobile", "ios", "android",
+                        "qa", "testing", "cyber", "security", "network", "sysadmin", "linux",
+                        "aws", "azure", "gcp", "docker", "kubernetes", "git", "programming",
+                        "technology", "computer science", "information technology",
+                    ],
+                    "chef": ["chef", "cook", "culinary", "kitchen", "food", "pastry", "baker"],
+                    "driver": ["driver", "cdl", "truck", "delivery", "logistics", "transportation"],
+                    "healthcare": ["nurse", "doctor", "medical", "healthcare", "clinical", "hospital", "pharmacy"],
+                    "finance": ["accountant", "finance", "banking", "cpa", "audit", "tax", "financial"],
+                    "hr": ["human resources", "hr", "recruiter", "talent", "payroll"],
+                }
+                kw_list = _CATEGORY_KEYWORDS.get(category, [category])
+
+                # Check 1: structured skill names
+                category_hit = any(
+                    any(kw in skill for kw in kw_list)
+                    for skill in skill_lower
+                )
+
+                # Check 2: work experience roles / job titles
+                if not category_hit and work_exp and isinstance(work_exp, list):
+                    role_text = " ".join(
+                        f"{exp.get('role','')} {exp.get('jobTitle','')}".lower()
+                        for exp in work_exp if isinstance(exp, dict)
+                    )
+                    category_hit = any(kw in role_text for kw in kw_list)
+
+                # Check 3: resume text snippet
+                if not category_hit and parsed_json and isinstance(parsed_json, dict):
+                    resume_head = (
+                        parsed_json.get("text") or parsed_json.get("_raw_text") or ""
+                    )[:1000].lower()
+                    category_hit = any(kw in resume_head for kw in kw_list)
+
                 if not category_hit:
                     continue
 
@@ -292,15 +346,31 @@ class SearchService:
                     f"{pd_loc.get('city','')} {pd_loc.get('province','')} "
                     f"{pd_loc.get('location','')}"
                 ).lower().strip()
-                if not any(loc in candidate_location or loc in email_str for loc in locations):
-                    remote_wanted = any("remote" in l for l in locations)
-                    if not remote_wanted:
-                        continue
+                remote_wanted = any("remote" in l for l in locations)
+                city_locations = [l for l in locations if "remote" not in l]
+                city_matched = bool(city_locations) and any(
+                    loc in candidate_location for loc in city_locations
+                )
+                if not city_matched and not remote_wanted:
+                    continue
+                # If remote_wanted → pass through regardless; if city_matched → also pass
 
             # ── Skills filter (candidate must have ALL required skills) ───
             if req_skills:
+                # Build a broad text blob for skill matching:
+                # structured skills list + resume text (catches skills buried in bullet points)
+                resume_text_blob = ""
+                if parsed_json and isinstance(parsed_json, dict):
+                    resume_text_blob = (
+                        parsed_json.get("text") or
+                        parsed_json.get("_raw_text") or
+                        parsed_json.get("structuredData", {}).get("text", "")
+                        if isinstance(parsed_json.get("structuredData"), dict) else ""
+                    ) or ""
+                resume_text_lower = resume_text_blob.lower()
                 if not all(
-                    any(rs in sl or sl in rs for sl in skill_lower)
+                    any(rs in sl or sl in rs for sl in skill_lower)   # structured skills
+                    or rs in resume_text_lower                          # resume text fallback
                     for rs in req_skills
                 ):
                     continue
@@ -310,6 +380,11 @@ class SearchService:
                 continue
             if exp_max is not None and years_exp > exp_max:
                 continue
+
+            # ── Salary filter (based on candidate's resume parsed salary expectation) ─
+            # NOTE: candidate_profiles doesn't store salary expectations directly.
+            # We skip this filter silently — salary is a job-side field.
+            # (salary_min / salary_max are accepted in the request for forward-compat)
 
             # ── jobType / workType filter ────────────────────────────
             # "REMOTE" and "HYBRID" are checked against resume/parsed data
@@ -331,20 +406,36 @@ class SearchService:
                     continue
                 # If no employment type data at all, include the candidate
 
-            # ── Text query filter (name / email / skill / location / phone) ─
+            # ── Text query filter (name / email / skill / location / resume) ─
             relevance = 1.0
             if query_low:
                 # Resolve personalDetails: resumeParsedJson first, then personalDetails column
-                pd_info          = _resolve_personal_details(parsed_json, personal_details_col)
+                pd_info           = _resolve_personal_details(parsed_json, personal_details_col)
                 candidate_loc_str = (
                     f"{pd_info.get('city','')} {pd_info.get('province','')} "
                     f"{pd_info.get('location','')}"
                 ).lower().strip()
                 candidate_phone = (pd_info.get("phone") or "").lower()
 
+                # Build resume text for query matching
+                resume_snippet = ""
+                if parsed_json and isinstance(parsed_json, dict):
+                    resume_snippet = (
+                        parsed_json.get("text") or
+                        parsed_json.get("_raw_text") or ""
+                    )[:3000].lower()
+
+                # Also pull work experience roles/titles
+                role_text = ""
+                if work_exp and isinstance(work_exp, list):
+                    for exp in work_exp:
+                        if isinstance(exp, dict):
+                            role_text += f" {exp.get('role','')} {exp.get('jobTitle','')}".lower()
+
                 text_blob = (
                     f"{full_name} {email_str} {' '.join(skill_lower)} "
-                    f"{candidate_loc_str} {candidate_phone}"
+                    f"{candidate_loc_str} {candidate_phone} "
+                    f"{role_text} {resume_snippet}"
                 )
 
                 # Match any word of the query against the blob (OR logic per word)
@@ -378,15 +469,30 @@ class SearchService:
         Natural language semantic search.
         Encodes the query with BERT and compares against each candidate's
         resume text + skills. Returns ranked results.
+
+        Also extracts location hints (e.g. 'from Toronto', 'in Alberta') from the
+        query text and applies a hard location filter on top of the semantic score.
         """
         if not query.strip():
             return []
 
         rows = db.execute(_CANDIDATE_SQL).fetchall()
 
+        # ── Extract location filter from natural-language query ───────────
+        # Matches: "from Toronto", "in British Columbia", "near Vancouver", etc.
+        query_lower = query.lower()
+        loc_match = re.search(
+            r"\b(?:from|in|near|based in|located in|living in)\s+([a-z][a-z\s]{2,30}?)(?:\s+(?:with|who|that|and|,)|$)",
+            query_lower,
+        )
+        location_filter: Optional[str] = None
+        if loc_match:
+            location_filter = loc_match.group(1).strip()
+            logger.info(f"AI search: extracted location filter = '{location_filter}'")
+
         # Pre-compute query embedding once
         query_embedding = None
-        keywords = [k for k in re.split(r"[\s,]+", query.lower()) if len(k) > 2]
+        keywords = [k for k in re.split(r"[\s,]+", query_lower) if len(k) > 2]
         try:
             if scoring_engine.encoder:
                 query_embedding = scoring_engine.encoder.encode([query])[0]
@@ -401,8 +507,18 @@ class SearchService:
              parse_status, personal_details_col, parsed_json,
              job_match_score, matched_skills_list) = row
 
-            skill_names = _skill_names(skills)
-            skill_lower = [s.lower() for s in skill_names]
+            skill_names_list = _skill_names(skills)
+            skill_lower = [s.lower() for s in skill_names_list]
+
+            # ── Location hard-filter ──────────────────────────────────────
+            if location_filter:
+                pd_info = _resolve_personal_details(parsed_json, personal_details_col)
+                cand_loc = (
+                    f"{pd_info.get('city','')} {pd_info.get('province','')} "
+                    f"{pd_info.get('location','')}"
+                ).lower().strip()
+                if location_filter not in cand_loc:
+                    continue  # skip candidates not in specified location
 
             # Build resume text corpus for semantic scoring
             resume_text = ""
@@ -411,7 +527,7 @@ class SearchService:
 
             if not resume_text:
                 # Fall back to skills only if no resume text
-                resume_text = " ".join(skill_names)
+                resume_text = " ".join(skill_names_list)
 
             if not resume_text:
                 continue

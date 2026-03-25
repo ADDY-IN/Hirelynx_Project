@@ -352,16 +352,27 @@ def score_from_s3_and_job(
     if isinstance(raw_resp, list):
         responsibilities = [str(r) for r in raw_resp if r]
 
-    # ── Step 3: AI-powered score (Groq LLM, falls back to rule-based) ─────
+    # ── Step 3: Extract candidate responsibilities from parsed resume ──────
+    # Pull from every workExperience entry's 'responsibilities' list
+    candidate_responsibilities: List[str] = []
+    for exp in parsed_data.get("workExperience", []):
+        if isinstance(exp, dict):
+            for r in exp.get("responsibilities", []):
+                r = str(r).strip()
+                if r:
+                    candidate_responsibilities.append(r)
+
+    # ── Step 4: AI-powered score (Groq LLM, falls back to rule-based) ─────
     result = engine.score_resume_against_job_ai(
-        parsed_json         = parsed_data,
-        resume_text         = resume_text,
-        required_skills     = required_skills,
-        exp_min             = job.experienceMin,
-        exp_max             = job.experienceMax,
-        job_description     = str(job.description or job.title or ""),
-        job_responsibilities= responsibilities,
-        job_title           = str(job.title or ""),
+        parsed_json                = parsed_data,
+        resume_text                = resume_text,
+        required_skills            = required_skills,
+        exp_min                    = job.experienceMin,
+        exp_max                    = job.experienceMax,
+        job_description            = str(job.description or job.title or ""),
+        job_responsibilities       = responsibilities,
+        job_title                  = str(job.title or ""),
+        candidate_responsibilities = candidate_responsibilities,
     )
 
     # ── Step 4: Persist to matches table ──────────────────────────────────

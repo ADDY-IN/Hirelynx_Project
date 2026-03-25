@@ -2,11 +2,13 @@
 Scoring Engine
 ==============
 Multi-factor resume-to-job scoring combining:
-  1. Skills Match    (60%) — required job skills vs candidate skills
-  2. Experience Match (25%) — candidate years vs job's min/max requirement
-  3. Education Match  (15%) — degree tier vs implied job education level
+  1. Skills Match           (50%) — required job skills vs candidate skills
+  2. Experience Match       (20%) — candidate years vs job's min/max requirement
+  3. Education Match        (10%) — degree tier vs implied job education level
+  4. Responsibilities Match (20%) — job responsibilities vs candidate work responsibilities
+                                     (semantic cosine similarity via SentenceTransformer)
 
-All three sub-scores are 0–100 and combined into a single jobMatchScore (float 0–100).
+All four sub-scores are 0–100 and combined into a single jobMatchScore (float 0–100).
 
 The original `score` / `score_with_embedding` methods are retained for backward
 compatibility with existing batch-matching endpoints.
@@ -84,6 +86,24 @@ def _extract_candidate_years(work_experience: List[Dict]) -> float:
     return total
 
 
+def _extract_candidate_responsibilities(work_experience: List[Dict]) -> List[str]:
+    """
+    Extract all responsibility bullet points from a candidate's work experience.
+    Flattens the list of lists into a single deduplicated list of non-empty strings.
+    """
+    seen: set = set()
+    result: List[str] = []
+    for exp in work_experience:
+        if not isinstance(exp, dict):
+            continue
+        for r in exp.get("responsibilities", []):
+            r = str(r).strip()
+            if r and r.lower() not in seen:
+                seen.add(r.lower())
+                result.append(r)
+    return result
+
+
 def _extract_candidate_skills(parsed_json: Dict, resume_text: str) -> List[str]:
     """Extract candidate skills from parsed JSON or fall back to raw text parsing."""
     skills: List[str] = []
@@ -140,10 +160,11 @@ class ScoringEngine:
     Backward-compatible methods retained for batch matching.
     """
 
-    # Weights for the three factors (must sum to 1.0)
-    WEIGHT_SKILLS  = 0.60
-    WEIGHT_EXP     = 0.25
-    WEIGHT_EDU     = 0.15
+    # Weights for the four factors (must sum to 1.0)
+    WEIGHT_SKILLS  = 0.50
+    WEIGHT_EXP     = 0.15
+    WEIGHT_EDU     = 0.05
+    WEIGHT_RESP    = 0.30
 
     def __init__(self, weight: float = 0.5):
         self.weight = weight   # legacy: used by score_with_embedding
@@ -158,6 +179,33 @@ class ScoringEngine:
     # NEW: Multi-factor scoring from parsed resume data
     # ----------------------------------------------------------------
 
+    def _match_responsibilities(
+        self,
+        job_responsibilities: List[str],
+        candidate_responsibilities: List[str],
+    ) -> float:
+        """
+        Semantic similarity between job responsibilities and candidate responsibilities.
+        Uses the SentenceTransformer encoder (already loaded) to compute sentence embeddings
+        and then computes mean max-cosine-similarity: for each job responsibility, find the
+        best-matching candidate responsibility, then average across all job responsibilities.
+        Returns a score 0–100. Falls back to 0 if encoder unavailable or lists are empty.
+        """
+        if not job_responsibilities or not candidate_responsibilities or self.encoder is None:
+            return 0.0
+        try:
+            job_embs  = self.encoder.encode(job_responsibilities,  convert_to_numpy=True, show_progress_bar=False)
+            cand_embs = self.encoder.encode(candidate_responsibilities, convert_to_numpy=True, show_progress_bar=False)
+            # sim matrix: (n_job, n_cand)
+            sim_matrix = cosine_similarity(job_embs, cand_embs)
+            # For each job responsibility, pick the best candidate match
+            best_per_job = sim_matrix.max(axis=1)
+            score = float(np.mean(best_per_job)) * 100
+            return round(max(0.0, min(100.0, score)), 2)
+        except Exception as e:
+            logger.warning(f"Responsibilities semantic match error: {e}")
+            return 0.0
+
     def score_resume_against_job(
         self,
         parsed_json: Dict,
@@ -167,12 +215,15 @@ class ScoringEngine:
         exp_max: Optional[float],
         job_description: str,
         job_responsibilities: List[str],
+        candidate_responsibilities: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Three-factor scoring:
-          - Skills Match   (60%): required skills vs candidate skills
-          - Experience     (25%): candidate years vs job requirement
-          - Education      (15%): candidate's highest degree vs job's implied minimum
+        Four-factor scoring:
+          - Skills Match           (50%): required skills vs candidate skills
+          - Experience             (20%): candidate years vs job requirement
+          - Education              (10%): candidate's highest degree vs job's implied minimum
+          - Responsibilities Match (20%): semantic similarity between job responsibilities
+                                          and candidate's work history responsibilities
 
         Returns a dict with: score, jobMatchScore, matchedSkillsList,
         missingSkills, totalRequired, breakdown, recommendation.
@@ -188,6 +239,12 @@ class ScoringEngine:
         ]
         c_edu_tier = max((_degree_tier(d) for d in c_degrees), default=0)
 
+        # Build candidate responsibilities if not provided — extract from workExperience
+        if candidate_responsibilities is None:
+            candidate_responsibilities = _extract_candidate_responsibilities(
+                parsed_json.get("workExperience", [])
+            )
+
         # ── 1. Skills Score ────────────────────────────────────────────────
         if required_skills:
             matched, missing = _match_skills(required_skills, c_skills, resume_text)
@@ -198,8 +255,6 @@ class ScoringEngine:
 
         # ── 2. Experience Score ────────────────────────────────────────────
         if exp_min is not None and exp_min > 0:
-            # Score ramps from 0% at 0 years to 100% at exp_min
-            # Bonus above exp_max is ignored — capped at 100
             exp_score = min(100.0, round((c_years / exp_min) * 100, 2))
         elif exp_max is not None and exp_max > 0:
             exp_score = min(100.0, round((c_years / exp_max) * 100, 2))
@@ -215,14 +270,22 @@ class ScoringEngine:
         elif c_edu_tier >= req_edu_tier:
             edu_score = 100.0
         else:
-            # Partial credit proportional to how close they are
             edu_score = round((c_edu_tier / req_edu_tier) * 100, 2)
+
+        # ── 4. Responsibilities Score ──────────────────────────────────────
+        if job_responsibilities and candidate_responsibilities:
+            resp_score = self._match_responsibilities(job_responsibilities, candidate_responsibilities)
+        elif not job_responsibilities:
+            resp_score = 100.0   # job posted no responsibilities — no penalty
+        else:
+            resp_score = 0.0     # job has responsibilities but candidate has none listed
 
         # ── Composite Score ────────────────────────────────────────────────
         final = round(
-            skills_score  * self.WEIGHT_SKILLS +
-            exp_score     * self.WEIGHT_EXP    +
-            edu_score     * self.WEIGHT_EDU,
+            skills_score * self.WEIGHT_SKILLS +
+            exp_score    * self.WEIGHT_EXP    +
+            edu_score    * self.WEIGHT_EDU    +
+            resp_score   * self.WEIGHT_RESP,
             2
         )
 
@@ -242,14 +305,17 @@ class ScoringEngine:
             "totalRequired":     len(required_skills),
             "recommendation":    recommendation,
             "breakdown": {
-                "skillsScore":      skills_score,
-                "experienceScore":  exp_score,
-                "educationScore":   edu_score,
-                "candidateYears":   c_years,
-                "requiredYearsMin": exp_min,
-                "requiredYearsMax": exp_max,
-                "candidateEduTier": c_edu_tier,
-                "requiredEduTier":  req_edu_tier,
+                "skillsScore":              skills_score,
+                "experienceScore":          exp_score,
+                "educationScore":           edu_score,
+                "responsibilitiesScore":    resp_score,
+                "candidateYears":           c_years,
+                "requiredYearsMin":         exp_min,
+                "requiredYearsMax":         exp_max,
+                "candidateEduTier":         c_edu_tier,
+                "requiredEduTier":          req_edu_tier,
+                "jobResponsibilitiesCount": len(job_responsibilities),
+                "candidateRespCount":       len(candidate_responsibilities),
             },
         }
 
@@ -266,6 +332,7 @@ class ScoringEngine:
         exp_max: Optional[float],
         job_responsibilities: List[str],
         job_title: str = "",
+        candidate_responsibilities: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Call Groq LLM to score a resume against a job.
@@ -293,6 +360,13 @@ class ScoringEngine:
             )
             resp_str = "\n".join(f"- {r}" for r in job_responsibilities[:15]) or "Not specified"
 
+            # Extract candidate responsibilities from their work experience for the prompt
+            cand_resp_list = candidate_responsibilities or []
+            cand_resp_str = (
+                "\n".join(f"- {r}" for r in cand_resp_list[:20])
+                if cand_resp_list else "Not specified"
+            )
+
             prompt = f"""You are an expert recruiter and HR analyst. Your job is to score how well this candidate's resume matches the job posting.
 
 Be STRICT and REALISTIC. Differentiate candidates based on actual skill alignment, experience depth, and role fit.
@@ -304,11 +378,14 @@ JOB DESCRIPTION:
 
 REQUIRED SKILLS: {skills_str}
 EXPERIENCE REQUIRED: {exp_str}
-KEY RESPONSIBILITIES:
+KEY JOB RESPONSIBILITIES:
 {resp_str}
 
 CANDIDATE RESUME:
 {resume_snippet}
+
+CANDIDATE WORK RESPONSIBILITIES (extracted from their past roles):
+{cand_resp_str}
 
 Return ONLY valid JSON with no markdown, no extra text — just the raw JSON object:
 {{
@@ -319,6 +396,7 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
     "skillsScore": <integer 0-100>,
     "experienceScore": <integer 0-100>,
     "educationScore": <integer 0-100>,
+    "responsibilitiesScore": <integer 0-100>,
     "overallReasoning": "<1-2 sentence explanation of the score>"
   }},
   "recommendation": "<one of: Excellent Match, Strong Match, Good Match, Potential Match, Low Match>"
@@ -343,13 +421,29 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
 
             data = _json.loads(raw)
 
-            score = float(data.get("jobMatchScore", 0))
             matched = data.get("matchedSkills", [])
             missing = data.get("missingSkills", [])
             breakdown = data.get("breakdown", {})
-            recommendation = data.get("recommendation", "")
 
-            # Validate recommendation label
+            # ── Recompute final score from sub-scores using OUR weights ──────
+            # Groq generates jobMatchScore independently from the sub-scores,
+            # making them inconsistent. We discard Groq's raw jobMatchScore and
+            # recompute it deterministically so the weights actually take effect.
+            s_score = float(breakdown.get("skillsScore", 0))
+            e_score = float(breakdown.get("experienceScore", 0))
+            edu_score = float(breakdown.get("educationScore", 0))
+            r_score = float(breakdown.get("responsibilitiesScore", 0))
+
+            score = round(
+                s_score   * self.WEIGHT_SKILLS +
+                r_score   * self.WEIGHT_RESP   +
+                e_score   * self.WEIGHT_EXP    +
+                edu_score * self.WEIGHT_EDU,
+                2
+            )
+
+            recommendation = data.get("recommendation", "")
+            # Validate recommendation label against the RECOMPUTED score
             valid_labels = {"Excellent Match", "Strong Match", "Good Match", "Potential Match", "Low Match"}
             if recommendation not in valid_labels:
                 recommendation = (
@@ -360,7 +454,7 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
                     "Low Match"
                 )
 
-            logger.info(f"Groq scoring complete: score={score}, recommendation={recommendation}")
+            logger.info(f"Groq scoring complete (recomputed from sub-scores): score={score}, recommendation={recommendation}")
 
             return {
                 "score":             score,
@@ -370,11 +464,12 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
                 "totalRequired":     len(required_skills),
                 "recommendation":    recommendation,
                 "breakdown": {
-                    "skillsScore":      breakdown.get("skillsScore", 0),
-                    "experienceScore":  breakdown.get("experienceScore", 0),
-                    "educationScore":   breakdown.get("educationScore", 0),
-                    "overallReasoning": breakdown.get("overallReasoning", ""),
-                    "scoredBy":         "groq-llm",
+                    "skillsScore":           breakdown.get("skillsScore", 0),
+                    "experienceScore":       breakdown.get("experienceScore", 0),
+                    "educationScore":        breakdown.get("educationScore", 0),
+                    "responsibilitiesScore": breakdown.get("responsibilitiesScore", 0),
+                    "overallReasoning":      breakdown.get("overallReasoning", ""),
+                    "scoredBy":              "groq-llm",
                 },
             }
 
@@ -392,12 +487,19 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
         job_description: str,
         job_responsibilities: List[str],
         job_title: str = "",
+        candidate_responsibilities: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Primary entry-point for on-demand resume scoring.
         Uses Groq LLM for intelligent, context-aware scoring.
         Automatically falls back to rule-based scoring if Groq is unavailable.
         """
+        # Pre-extract candidate responsibilities once — used by both Groq and fallback
+        if candidate_responsibilities is None:
+            candidate_responsibilities = _extract_candidate_responsibilities(
+                parsed_json.get("workExperience", [])
+            )
+
         result = self._groq_score(
             resume_text=resume_text,
             job_description=job_description,
@@ -406,6 +508,7 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
             exp_max=exp_max,
             job_responsibilities=job_responsibilities,
             job_title=job_title,
+            candidate_responsibilities=candidate_responsibilities,
         )
         if result:
             return result
@@ -420,6 +523,7 @@ Return ONLY valid JSON with no markdown, no extra text — just the raw JSON obj
             exp_max=exp_max,
             job_description=job_description,
             job_responsibilities=job_responsibilities,
+            candidate_responsibilities=candidate_responsibilities,
         )
         # Tag the fallback so it's identifiable in the response
         fallback.setdefault("breakdown", {})["scoredBy"] = "rule-based-fallback"
