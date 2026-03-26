@@ -1,11 +1,11 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
 from typing import List, Optional
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.models import (CandidateProfile, JobProfile, MatchScore, DBCandidate, DBJob,
-                        ResumeMatchRequest, CandidateSearchRequest)
+                        ResumeMatchRequest, CandidateSearchRequest, EmployerProfile)
 from app.workflow import (parse_only,
                           generate_job_summary_from_profile,
                           score_from_s3_and_job)
@@ -67,6 +67,8 @@ async def match_resume(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# --- 3. ADMIN: Smart Candidate Search ---
+
 @app.post("/v1/admin/candidates/search")
 async def smart_search_candidates(
     body: CandidateSearchRequest,
@@ -114,6 +116,8 @@ async def smart_search_candidates(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# --- 4. CANDIDATE: Generate About Me Summary ---
+
 @app.get("/v1/candidate/summarize")
 async def candidate_summary(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -132,6 +136,9 @@ async def candidate_summary(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+# --- 5. RECRUITER: Summarize Job Description ---
+
 @app.post("/v1/recruiter/jobs/summarize")
 async def summarize_and_update_job(
     job_data: JobProfile,
@@ -148,4 +155,46 @@ async def summarize_and_update_job(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+# --- 6. EMPLOYER: Company Profile Summary ---
+
+@app.post("/v1/employer/company-profile")
+async def create_employer_company_profile(
+    request: Request,
+):
+    """
+    Accepts either:
+      - The full login response body (with a nested "employerProfile" key), OR
+      - Just the employerProfile object directly
+
+    Steps:
+      1. Extracts employer/company data from whichever shape is sent.
+      2. Scrapes the company website (4s timeout) for real company content.
+      3. Sends scraped content + employer data to Groq (1s timeout).
+      4. Returns a personalized company summary.
+
+    No auth required — Node.js backend calls this directly after employer login.
+
+    Response: { "summary": "..." }
+    """
+    try:
+        from app.summarizer_service import summarize_employer_profile
+
+        body = await request.json()
+
+        # Handle both shapes: full login response OR just the employerProfile object
+        employer_dict = body.get("employerProfile") or body.get("data", {}).get("employerProfile") or body
+
+        # Merge top-level firstName/lastName if present (from the user object)
+        if "firstName" not in employer_dict or not employer_dict.get("firstName"):
+            employer_dict = {**employer_dict}
+            employer_dict.setdefault("firstName", body.get("firstName") or body.get("data", {}).get("firstName"))
+            employer_dict.setdefault("lastName",  body.get("lastName")  or body.get("data", {}).get("lastName"))
+
+        # Validate with Pydantic
+        profile = EmployerProfile(**employer_dict)
+        summary = await summarize_employer_profile(profile.model_dump())
+        return {"summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 

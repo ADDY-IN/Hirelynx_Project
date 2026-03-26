@@ -252,6 +252,34 @@ class ResumeMatchRequest(BaseModel):
     job_id: int
 
 
+class EmployerProfile(BaseModel):
+    """
+    Request body for POST /v1/employer/company-profile.
+    Matches the Company Details form payload from the employer frontend.
+    firstName / lastName are Optional because they come from the parent user
+    object in Node.js and may not be nested inside employerProfile.
+    """
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    companyName: str
+    companyWebsite: Optional[str] = None
+    companyDescription: Optional[str] = None
+    industry: Optional[str] = None
+    companySize: Optional[str] = None
+    contactPersonName: Optional[str] = None
+    contactEmail: Optional[str] = None
+    contactPhone: Optional[str] = None
+    sinNumber: Optional[str] = None
+    legalName: Optional[str] = None
+    companyType: Optional[str] = None   # e.g. MNC, Startup, SME
+    province: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+
+    class Config:
+        extra = "allow"
+
+
 class MatchScore(BaseModel):
     id: Optional[int] = None
     candidateId: Optional[int] = None

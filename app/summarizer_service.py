@@ -505,6 +505,204 @@ Return ONLY the summary paragraph, nothing else."""
 
 
 # ---------------------------------------------------------------------------
+# Employer Website Scraper
+# ---------------------------------------------------------------------------
+
+async def scrape_website_text(url: str, timeout: float = 4.0) -> Optional[str]:
+    """
+    Fetches and extracts meaningful text from a company website.
+    Tries the homepage, then /about and /about-us sub-pages.
+    Hard timeout: 4 seconds total. Returns None on any failure.
+    """
+    try:
+        import httpx
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin, urlparse
+
+        # Normalise URL
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; HirelynxBot/1.0; +https://hirelynx.com)"
+            ),
+            "Accept": "text/html,application/xhtml+xml",
+        }
+
+        def _extract_text(html: str) -> str:
+            soup = BeautifulSoup(html, "html.parser")
+            # Remove boilerplate tags
+            for tag in soup(["script", "style", "nav", "footer", "header",
+                              "aside", "form", "noscript", "svg", "img"]):
+                tag.decompose()
+            # Prefer about/mission sections if present
+            for section_id in ("about", "mission", "company", "overview", "who-we-are"):
+                el = soup.find(id=section_id) or soup.find(class_=section_id)
+                if el:
+                    text = el.get_text(separator=" ", strip=True)
+                    if len(text) > 100:
+                        return text[:2500]
+            # Fall back to full page body text
+            body = soup.find("body")
+            return (body or soup).get_text(separator=" ", strip=True)[:2500]
+
+        extracted_parts: list[str] = []
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=True,
+        ) as client:
+            # 1. Homepage
+            try:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    text = _extract_text(resp.text)
+                    if text:
+                        extracted_parts.append(text)
+            except Exception:
+                pass
+
+            # 2. /about page (only if homepage didn't give enough)
+            if len(" ".join(extracted_parts)) < 300:
+                base = "{uri.scheme}://{uri.netloc}".format(uri=urlparse(url))
+                for path in ["/about", "/about-us", "/company"]:
+                    try:
+                        resp = await client.get(
+                            urljoin(base, path), headers=headers
+                        )
+                        if resp.status_code == 200:
+                            text = _extract_text(resp.text)
+                            if text:
+                                extracted_parts.append(text)
+                                break
+                    except Exception:
+                        continue
+
+        combined = " ".join(extracted_parts)
+        # Collapse whitespace and truncate
+        combined = re.sub(r"\s+", " ", combined).strip()
+        return combined[:2500] if combined else None
+
+    except Exception as e:
+        logger.warning(f"Website scrape failed for {url}: {e}")
+        return None
+
+
+def _llm_generate_with_timeout(prompt: str, timeout_seconds: float = 1.0) -> Optional[str]:
+    """
+    Groq API call with a hard wall-clock timeout (default 1 second).
+    Uses a thread + concurrent.futures so we never block longer than timeout_seconds.
+    """
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_llm_generate, prompt)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            logger.warning("Groq call exceeded timeout — using fallback.")
+            return None
+        except Exception as e:
+            logger.warning(f"Groq call failed: {e}")
+            return None
+
+
+async def summarize_employer_profile(employer_data: dict) -> str:
+    """
+    Generates a personalized company summary for the employer profile.
+
+    Flow:
+      1. Scrape company website (4s timeout) → real company content
+      2. Merge scraped text + employer-provided data into a Groq prompt
+      3. Groq generates summary (1s timeout)
+      4. Fallback to a simple template if both steps fail
+    """
+    company_name    = employer_data.get("companyName", "The company")
+    description     = employer_data.get("companyDescription") or ""
+    industry        = employer_data.get("industry") or ""
+    company_type    = employer_data.get("companyType") or ""
+    company_size    = employer_data.get("companySize") or ""
+    city            = employer_data.get("city") or ""
+    province        = employer_data.get("province") or ""
+    country         = employer_data.get("country") or ""
+    website         = employer_data.get("companyWebsite") or ""
+    legal_name      = employer_data.get("legalName") or ""
+
+    location_parts  = [p for p in [city, province, country] if p]
+    location_str    = ", ".join(location_parts)
+
+    # --- Step 1: Scrape website ---
+    scraped_text: Optional[str] = None
+    if website:
+        scraped_text = await scrape_website_text(website, timeout=4.0)
+        if scraped_text:
+            logger.info(f"Scraped {len(scraped_text)} chars from {website}")
+        else:
+            logger.info(f"Scrape returned no content for {website}")
+
+    # --- Step 2: Build prompt ---
+    employer_block = f"""EMPLOYER-PROVIDED INFORMATION:
+- Company Name: {company_name}{f" (Legal: {legal_name})" if legal_name and legal_name != company_name else ""}
+- Industry: {industry or "Not specified"}
+- Company Type: {company_type or "Not specified"}
+- Company Size: {company_size or "Not specified"} employees
+- Location: {location_str or "Not specified"}
+- Website: {website or "Not provided"}
+- Description: {description[:600] if description else "Not provided"}"""
+
+    website_block = ""
+    if scraped_text:
+        website_block = f"""
+
+SCRAPED FROM COMPANY WEBSITE ({website}):
+{scraped_text[:1200]}"""
+
+    priority_note = (
+        "Prioritize the website content for accuracy. "
+        if scraped_text
+        else "Use the employer-provided description to craft the summary. "
+    )
+
+    prompt = f"""You are a professional company profile writer for a job board platform.
+
+{employer_block}{website_block}
+
+Task: Write a 3–4 sentence professional company summary suitable for a job board employer profile.
+Rules:
+- {priority_note}Make it specific to THIS company — not generic.
+- Third person ("They are...", "{company_name} is...", "The team at...")
+- Mention the industry, location, and company type naturally if relevant
+- No buzzwords like "dynamic", "synergy", "passionate", "cutting-edge"
+- Do NOT reuse the employer description word-for-word
+- Sound like it was written by a professional copywriter
+
+Return ONLY the summary paragraph, nothing else."""
+
+    # --- Step 3: Groq with 1s timeout ---
+    result = _llm_generate_with_timeout(prompt, timeout_seconds=1.0)
+    if result:
+        return result
+
+    # --- Step 4: Simple fallback ---
+    parts = [f"{company_name} is"]
+    if company_type:
+        parts.append(f"a {company_type}")
+    if industry:
+        parts.append(f"operating in the {industry} sector")
+    if location_str:
+        parts.append(f"based in {location_str}")
+    base = " ".join(parts) + "."
+
+    if company_size:
+        base += f" With {company_size} employees, they bring a focused team to every challenge."
+    if description:
+        snip = description.strip()[:200].rstrip(".,")
+        base += f" {snip}."
+
+    return base
+
+
+# ---------------------------------------------------------------------------
 # Main SummarizerService
 # ---------------------------------------------------------------------------
 
