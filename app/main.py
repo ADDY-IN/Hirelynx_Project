@@ -37,7 +37,10 @@ async def upload_resume(s3_key: str, db: Session = Depends(get_db)):
             personalDetails=parsed_data.get("personalDetails"), 
             skills=parsed_data.get("skills"), 
             education=parsed_data.get("education", []), 
-            workExperience=parsed_data.get("workExperience", [])
+            workExperience=parsed_data.get("workExperience", []),
+            projects=parsed_data.get("projects", []),
+            certifications=parsed_data.get("certifications", []),
+            summary=parsed_data.get("summary", ""),
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

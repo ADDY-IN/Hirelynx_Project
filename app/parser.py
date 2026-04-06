@@ -82,6 +82,13 @@ _USER_PROMPT_TEMPLATE = """Extract resume data and return this exact JSON struct
       "summary": ""
     }}
   ],
+  "certifications": [
+    {{
+      "name": "",
+      "issuer": "",
+      "issueDate": ""
+    }}
+  ],
   "summary": ""
 }}
 
@@ -134,8 +141,17 @@ def _call_groq(raw_text: str) -> Dict[str, Any]:
     if not client:
         return {}
 
-    # Cap text to keep within model context and reduce latency
-    text_chunk = raw_text[:5000]
+    # Cap text to keep within model context
+    # Projects appear late in resumes, so we use 12000 chars.
+    # For very long resumes, preserve both the start AND the end
+    # so skills/experience AND projects/certs are both captured.
+    MAX_CHARS = 12000
+    if len(raw_text) <= MAX_CHARS:
+        text_chunk = raw_text
+    else:
+        # Take first 8000 (personal info, skills, experience) +
+        # last 4000 (projects, certifications, education at end)
+        text_chunk = raw_text[:8000] + "\n...\n" + raw_text[-4000:]
     prompt = _USER_PROMPT_TEMPLATE.format(raw_text=text_chunk)
 
     try:
@@ -250,6 +266,19 @@ class ResumeParser:
                 summary=p.get("summary") or None,
             ))
 
+        # ── certifications ────────────────────────────────────────────────
+        raw_certs = data.get("certifications") or []
+        certifications = []
+        for c in raw_certs:
+            if not isinstance(c, dict) or not c.get("name"):
+                continue
+            from app.models import Certificate
+            certifications.append(Certificate(
+                name=c["name"],
+                issuer=c.get("issuer") or None,
+                issueDate=c.get("issueDate") or None,
+            ))
+
         return {
             "personalDetails": pd.model_dump(),
             "workType": data.get("workType") or None,
@@ -258,6 +287,7 @@ class ResumeParser:
             "education": [e.model_dump() for e in education],
             "workExperience": [w.model_dump() for w in work_experience],
             "projects": [p.model_dump() for p in projects],
+            "certifications": [c.model_dump() for c in certifications],
             "summary": data.get("summary") or "",
         }
 
