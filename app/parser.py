@@ -79,6 +79,7 @@ _USER_PROMPT_TEMPLATE = """Extract resume data and return this exact JSON struct
     {{
       "title": "",
       "tools": [],
+      "startDate": "",
       "summary": ""
     }}
   ],
@@ -99,6 +100,9 @@ Rules:
 - currentlyWorking: true only if "present", "current", or "ongoing" appears in that job entry
 - province: use the 2-letter abbreviation for Canadian provinces (ON, BC, AB, QC, etc.)
 - summary: first 2-3 sentences summarizing the candidate's professional profile
+- projects.startDate: capture the month/year shown next to the project (e.g. "March-23", "Oct-22")
+- projects.summary: use the one-liner description written below the project title
+- certifications: ONLY include formal professional certifications or courses (e.g. AWS Certified Developer, Google Analytics Certificate). Do NOT include achievements, awards, medals, prizes, competition ranks, or LeetCode/HackerRank scores — those are NOT certifications.
 - Return empty string "" for any missing field, NOT null
 
 RESUME TEXT:
@@ -162,7 +166,7 @@ def _call_groq(raw_text: str) -> Dict[str, Any]:
                 {"role": "user",   "content": prompt},
             ],
             temperature=0.0,       # deterministic
-            max_tokens=2048,
+            max_tokens=4096,       # enough for dense resumes (30+ skills, 8+ projects)
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content
@@ -263,6 +267,7 @@ class ResumeParser:
             projects.append(Project(
                 title=p["title"],
                 tools=[t for t in tools if isinstance(t, str) and t.strip()],
+                startDate=p.get("startDate") or None,
                 summary=p.get("summary") or None,
             ))
 
