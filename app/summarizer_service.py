@@ -585,10 +585,11 @@ async def summarize_employer_profile(employer_data: dict) -> str:
     Generates a personalized company summary for the employer profile.
 
     Flow:
-      1. Scrape company website (no hard timeout)
-      2. Merge scraped text + employer data into Groq prompt
-      3. Groq generates summary (no timeout — quality over speed)
-      4. Fallback to a clean template — raw description NEVER included
+      1. Scrape company website (up to 15s)
+      2. Merge scraped text + employer data into a rich Groq prompt
+      3. Dedicated Groq call (higher temp + more tokens than shared helper)
+         so every company gets a genuinely unique, AI-written summary
+      4. Fallback to a minimal template — raw description NEVER included
     """
     company_name = employer_data.get("companyName", "The company")
     description  = employer_data.get("companyDescription") or ""
@@ -613,61 +614,94 @@ async def summarize_employer_profile(employer_data: dict) -> str:
         else:
             logger.info(f"Scrape returned no content for {website}")
 
-    # --- Step 2: Build prompt ---
-    employer_block = (
-        f"EMPLOYER-PROVIDED INFORMATION:\n"
-        f"- Company Name: {company_name}"
-        + (f" (Legal: {legal_name})" if legal_name and legal_name != company_name else "")
-        + f"\n- Industry: {industry or 'Not specified'}"
-        f"\n- Company Type: {company_type or 'Not specified'}"
-        f"\n- Company Size: {company_size or 'Not specified'} employees"
-        f"\n- Location: {location_str or 'Not specified'}"
-        f"\n- Website: {website or 'Not provided'}"
-        f"\n- Description: {description[:600] if description else 'Not provided'}"
-    )
+    # --- Step 2: Build rich, data-anchored prompt ---
+    # List only the fields that actually have content so the LLM can't
+    # hide behind "not specified" filler and must reference real details.
+    known_facts: list[str] = []
+    if company_name and company_name != "The company":
+        known_facts.append(f'Company name: "{company_name}"')
+    if legal_name and legal_name != company_name:
+        known_facts.append(f'Legal / registered name: "{legal_name}"')
+    if industry:
+        known_facts.append(f"Industry: {industry}")
+    if company_type:
+        known_facts.append(f"Organisation type: {company_type}")
+    if company_size:
+        known_facts.append(f"Team size: {company_size} employees")
+    if location_str:
+        known_facts.append(f"Location: {location_str}")
+    if website:
+        known_facts.append(f"Website: {website}")
+    if description:
+        known_facts.append(f'Employer description: "{description[:500]}"')
 
-    website_block = ""
+    facts_block = "\n".join(f"  • {f}" for f in known_facts) if known_facts else "  • (no additional data provided)"
+
+    scraped_block = ""
     if scraped_text:
-        website_block = f"\n\nSCRAPED FROM COMPANY WEBSITE ({website}):\n{scraped_text[:1200]}"
+        scraped_block = (
+            f"\n\nCONTENT SCRAPED FROM {website}:\n"
+            f"{scraped_text[:1500]}\n"
+            "(Use this as the primary source of truth about the company.)"
+        )
 
-    priority_note = (
-        "Prioritize the scraped website content for accuracy over the employer description. "
-        if scraped_text
-        else "Use the structured fields (name, industry, size, location) — ignore any placeholder or test text in the description. "
-    )
+    prompt = f"""You are a senior copywriter writing employer profiles for a professional job board.
 
-    prompt = (
-        "You are a professional company profile writer for a job board platform.\n\n"
-        + employer_block
-        + website_block
-        + "\n\nTask: Write a 3-4 sentence professional company summary for a job board employer profile.\n"
-        "Rules:\n"
-        f"- {priority_note}Make it specific to THIS company — not generic.\n"
-        f'- Third person ("They are...", "{company_name} is...", "The team at...")\n'
-        "- Mention the industry, location, and company type naturally if relevant\n"
-        '- No buzzwords like "dynamic", "synergy", "passionate", "cutting-edge"\n'
-        "- Do NOT copy the employer description word-for-word\n"
-        "- NEVER include placeholder, test, or gibberish text in the summary\n"
-        "- Sound like it was written by a professional copywriter\n\n"
-        "Return ONLY the summary paragraph, nothing else."
-    )
+COMPANY DATA:
+{facts_block}{scraped_block}
 
-    # --- Step 3: Groq (no timeout) ---
-    result = _llm_generate(prompt)
-    if result:
-        return result
+YOUR TASK:
+Write a 4–5 sentence company profile for this employer's job board page.
 
-    # --- Step 4: Clean fallback — no raw description ever ---
-    parts = [f"{company_name} is"]
+STRICT REQUIREMENTS — read carefully:
+1. Every sentence MUST reference at least one specific, concrete detail from the data above
+   (company name, industry, location, team size, what they actually do, etc.).
+2. NO two summaries you write should ever sound the same — vary your sentence openings and structure.
+3. Third-person voice only (e.g. "{company_name} is...", "The team at {company_name}...", "Based in {location_str or 'their region'}...").
+4. Sound like a human copywriter wrote it — warm, professional, factual.
+5. Do NOT use: "dynamic", "synergy", "passionate", "cutting-edge", "innovative solutions", "world-class".
+6. Do NOT copy the employer description verbatim.
+7. Do NOT invent facts that are not in the data.
+8. If scraped website content is provided, derive your key facts from it — it is more reliable than the employer description.
+9. Output ONLY the summary paragraph. No headings, no bullet points, no extra commentary.
+
+Write the summary now:"""
+
+    # --- Step 3: Dedicated Groq call — higher temp + more tokens than shared helper ---
+    try:
+        from app.config import settings
+        from groq import Groq
+
+        api_key = getattr(settings, "GROQ_API_KEY", None)
+        if api_key:
+            client = Groq(api_key=api_key)
+            resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.85,   # higher than shared helper → more creative variance
+                max_tokens=550,     # room for 4-5 rich sentences
+            )
+            result = resp.choices[0].message.content.strip()
+            # Scrape content can contain raw escaped quotes that the LLM echoes
+            # literally — normalise them before returning.
+            result = result.replace('\\"', '"').replace("\\n", " ")
+            result = " ".join(result.split())   # collapse any stray whitespace
+            if result:
+                return result
+    except Exception as e:
+        logger.warning(f"Groq employer summary failed: {e}")
+
+    # --- Step 4: Minimal clean fallback — no raw description ever ---
+    parts: list[str] = [f"{company_name} is"]
     if company_type:
         parts.append(f"a {company_type}")
     if industry:
-        parts.append(f"a company operating in the {industry} sector")
+        parts.append(f"operating in the {industry} sector")
     if location_str:
         parts.append(f"based in {location_str}")
-    base = " ".join(parts) + "."
+    base = " ".join(parts).rstrip() + "."
     if company_size:
-        base += f" With {company_size} employees, they are building their team and hiring on Hirelynx."
+        base += f" With a team of {company_size} employees, they are actively growing and hiring on Hirelynx."
     return base
 
 
