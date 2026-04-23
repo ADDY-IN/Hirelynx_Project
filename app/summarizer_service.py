@@ -677,29 +677,36 @@ async def summarize_employer_profile(employer_data: dict) -> str:
             "(Use this as the primary source of truth about the company.)"
         )
 
-    prompt = f"""You are a senior copywriter writing employer profiles for a professional job board.
+    # Determine the best name to anchor the summary:
+    # Scraped site is most trustworthy → legalName → companyName
+    display_name = company_name  # default; LLM will override from scraped content via rule below
+
+    prompt = f"""You are a world-class brand copywriter hired to write employer profiles for a premium job board.
+Your writing makes people stop scrolling. It is specific, confident, and reads like it was written by someone
+who actually researched this company — because you did (see the data below).
 
 COMPANY DATA:
 {facts_block}{scraped_block}
 
 YOUR TASK:
-Write a 4–5 sentence company profile for this employer's job board page.
+Write a single flowing paragraph (4–5 sentences) that serves as this company's profile on a job board.
 
-STRICT REQUIREMENTS — read carefully:
-1. Every sentence MUST reference at least one specific, concrete detail from the data above
-   (company name, industry, location, team size, what they actually do, etc.).
-2. NO two summaries you write should ever sound the same — vary your sentence openings and structure.
-3. Third-person voice only (e.g. "{company_name} is...", "The team at {company_name}...", "Based in {location_str or 'their region'}...").
-4. Sound like a human copywriter wrote it — warm, professional, factual.
-5. Do NOT use: "dynamic", "synergy", "passionate", "cutting-edge", "innovative solutions", "world-class".
-6. Do NOT copy the employer description verbatim.
-7. Do NOT invent facts that are not in the data.
-8. If scraped website content is provided, derive your key facts from it — it is more reliable than the employer description.
-9. Output ONLY the summary paragraph. No headings, no bullet points, no extra commentary.
+HOW TO WRITE IT:
+- Open with a strong, specific hook about what this company actually does — not what industry it's in.
+  Lead with their work, their product, their specialty. Make it tangible.
+- Weave in location, team size, and company type naturally — never as a list, always as part of a sentence.
+- Close with something that makes a job seeker want to work there — culture, impact, growth, or ambition.
+- Write in third person. Vary your sentence rhythm. Sound human, not corporate.
+- Use only facts from the data above. Do not invent anything.
+- If scraped website content is provided: trust it completely — use the company name, services, and tone
+  from the website. The website name overrides the "Company name" field if they differ.
+- Do NOT use any of these words: dynamic, synergy, passionate, cutting-edge, innovative, world-class,
+  solutions, leverage, empower, transformative, holistic.
+- Output ONLY the paragraph. No intro, no label, no explanation.
 
-Write the summary now:"""
+Write it now:"""
 
-    # --- Step 4: Dedicated Groq call — higher temp + more tokens than shared helper ---
+    # --- Step 4: Dedicated Groq call ---
     try:
         from app.config import settings
         from groq import Groq
@@ -710,8 +717,8 @@ Write the summary now:"""
             resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.85,   # higher than shared helper → more creative variance
-                max_tokens=550,     # room for 4-5 rich sentences
+                temperature=0.9,    # creative but not wild
+                max_tokens=600,     # room for 4-5 strong sentences
             )
             result = resp.choices[0].message.content.strip()
             # Scraped HTML can carry escape sequences (\\" \\' \\\\ \\n) that the LLM
