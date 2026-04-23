@@ -586,10 +586,11 @@ async def summarize_employer_profile(employer_data: dict) -> str:
 
     Flow:
       1. Scrape company website (up to 15s)
-      2. Merge scraped text + employer data into a rich Groq prompt
+      2. Check data richness:
+         - Rich (scraped content OR meaningful description) → Groq AI summary
+         - Minimal (only basic fields) → clean 2-3 line factual template, no hallucination
       3. Dedicated Groq call (higher temp + more tokens than shared helper)
-         so every company gets a genuinely unique, AI-written summary
-      4. Fallback to a minimal template — raw description NEVER included
+      4. Last-resort fallback if Groq is down
     """
     company_name = employer_data.get("companyName", "The company")
     description  = employer_data.get("companyDescription") or ""
@@ -614,9 +615,40 @@ async def summarize_employer_profile(employer_data: dict) -> str:
         else:
             logger.info(f"Scrape returned no content for {website}")
 
-    # --- Step 2: Build rich, data-anchored prompt ---
-    # List only the fields that actually have content so the LLM can't
-    # hide behind "not specified" filler and must reference real details.
+    # --- Step 2: Data richness gate ---
+    # "Rich" = we have something substantive the LLM can actually work with.
+    # Scraped website content OR a real employer description (>30 chars) qualifies.
+    has_rich_content = bool(scraped_text) or bool(description and len(description.strip()) > 30)
+
+    if not has_rich_content:
+        # Not enough info to write a meaningful AI summary without hallucinating.
+        # Return a clean, honest 2-3 sentence factual profile from the available fields.
+        logger.info(f"Insufficient data for AI summary — returning factual template for '{company_name}'")
+
+        line1_parts: list[str] = [company_name]
+        if company_type and industry:
+            line1_parts.append(f"is a {company_type} in the {industry} industry")
+        elif company_type:
+            line1_parts.append(f"is a {company_type}")
+        elif industry:
+            line1_parts.append(f"operates in the {industry} industry")
+        else:
+            line1_parts.append("is a company")
+        if location_str:
+            line1_parts.append(f"based in {location_str}")
+        line1 = " ".join(line1_parts) + "."
+
+        line2 = ""
+        if company_size:
+            line2 = f"With a team of {company_size} employees, they bring focused expertise and a hands-on approach to their work."
+
+        line3 = f"{company_name} is currently growing their team and hiring on Hirelynx."
+
+        return " ".join(filter(bool, [line1, line2, line3]))
+
+    # --- Step 3: Build rich, data-anchored prompt (only reached when we have real content) ---
+    # List only fields that actually have content so the LLM can't hide behind
+    # "not specified" filler and must reference real details.
     known_facts: list[str] = []
     if company_name and company_name != "The company":
         known_facts.append(f'Company name: "{company_name}"')
@@ -667,7 +699,7 @@ STRICT REQUIREMENTS — read carefully:
 
 Write the summary now:"""
 
-    # --- Step 3: Dedicated Groq call — higher temp + more tokens than shared helper ---
+    # --- Step 4: Dedicated Groq call — higher temp + more tokens than shared helper ---
     try:
         from app.config import settings
         from groq import Groq
@@ -682,16 +714,17 @@ Write the summary now:"""
                 max_tokens=550,     # room for 4-5 rich sentences
             )
             result = resp.choices[0].message.content.strip()
-            # Scrape content can contain raw escaped quotes that the LLM echoes
-            # literally — normalise them before returning.
-            result = result.replace('\\"', '"').replace("\\n", " ")
-            result = " ".join(result.split())   # collapse any stray whitespace
+            # Scraped HTML can carry escape sequences (\\" \\' \\\\ \\n) that the LLM
+            # sometimes echoes verbatim. One regex pass handles all of them.
+            result = re.sub(r'\\(["\'/])', r'\1', result)  # \\" → "  \\' → '  \\\\ → \\
+            result = re.sub(r'\\n', ' ', result)              # literal \\n → space
+            result = " ".join(result.split())                 # collapse whitespace
             if result:
                 return result
     except Exception as e:
         logger.warning(f"Groq employer summary failed: {e}")
 
-    # --- Step 4: Minimal clean fallback — no raw description ever ---
+    # --- Step 5: Last-resort fallback (Groq down) ---
     parts: list[str] = [f"{company_name} is"]
     if company_type:
         parts.append(f"a {company_type}")
