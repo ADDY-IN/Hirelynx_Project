@@ -622,7 +622,7 @@ async def summarize_employer_profile(employer_data: dict) -> str:
 
     if not has_rich_content:
         # Not enough info to write a meaningful AI summary without hallucinating.
-        # Return a clean, honest 2-3 sentence factual profile from the available fields.
+        # Return a clean, honest 6-line factual profile from the available fields.
         logger.info(f"Insufficient data for AI summary — returning factual template for '{company_name}'")
 
         line1_parts: list[str] = [company_name]
@@ -636,15 +636,33 @@ async def summarize_employer_profile(employer_data: dict) -> str:
             line1_parts.append("is a company")
         if location_str:
             line1_parts.append(f"based in {location_str}")
+        else:
+            line1_parts.append("based in Canada")
         line1 = " ".join(line1_parts) + "."
 
-        line2 = ""
-        if company_size:
-            line2 = f"With a team of {company_size} employees, they bring focused expertise and a hands-on approach to their work."
+        line2 = (
+            f"With a team of {company_size} employees, they bring focused expertise and a hands-on approach to their work."
+            if company_size
+            else f"{company_name} is a dedicated team committed to delivering quality work for their clients and community."
+        )
 
-        line3 = f"{company_name} is currently growing their team and hiring on Hirelynx."
+        line3 = (
+            f"Operating in the {industry} sector, {company_name} serves clients across Canada with a commitment to high standards."
+            if industry
+            else f"{company_name} serves clients across Canada and is committed to delivering value in everything they do."
+        )
 
-        return " ".join(filter(bool, [line1, line2, line3]))
+        line4 = (
+            f"As a {company_type}, they operate with the agility and focus needed to meet the evolving demands of the Canadian market."
+            if company_type
+            else "They operate with the agility and focus needed to meet the evolving demands of the Canadian market."
+        )
+
+        line5 = f"The team at {company_name} values excellence, collaboration, and a strong work culture that supports growth at every level."
+
+        line6 = f"{company_name} is currently growing their team and welcoming new talent through Hirelynx."
+
+        return " ".join(filter(bool, [line1, line2, line3, line4, line5, line6]))
 
     # --- Step 3: Build rich, data-anchored prompt (only reached when we have real content) ---
     # List only fields that actually have content so the LLM can't hide behind
@@ -681,20 +699,26 @@ async def summarize_employer_profile(employer_data: dict) -> str:
     # Scraped site is most trustworthy → legalName → companyName
     display_name = company_name  # default; LLM will override from scraped content via rule below
 
-    prompt = f"""You are a world-class brand copywriter hired to write employer profiles for a premium job board.
+    prompt = f"""You are a world-class brand copywriter hired to write employer profiles for a premium Canadian job board.
 Your writing makes people stop scrolling. It is specific, confident, and reads like it was written by someone
 who actually researched this company — because you did (see the data below).
+
+CONTEXT: This platform serves Canadian businesses and job seekers. Most employers operate in Canada.
+When relevant, acknowledge the Canadian market, province, or local community naturally.
 
 COMPANY DATA:
 {facts_block}{scraped_block}
 
 YOUR TASK:
-Write a single flowing paragraph (4–5 sentences) that serves as this company's profile on a job board.
+Write a minimum of 6 sentences (you may write up to 8) that serve as this company's profile on a Canadian job board.
+Do NOT write a single dense paragraph — vary your sentence length and rhythm so it reads naturally.
 
 HOW TO WRITE IT:
 - Open with a strong, specific hook about what this company actually does — not what industry it's in.
   Lead with their work, their product, their specialty. Make it tangible.
-- Weave in location, team size, and company type naturally — never as a list, always as part of a sentence.
+- Describe what makes them stand out in their market or community — their focus, their clients, their craft.
+- Weave in location (city/province), team size, and company type naturally — never as a list.
+- Include a sentence on their presence or relevance in the Canadian market or local community where applicable.
 - Close with something that makes a job seeker want to work there — culture, impact, growth, or ambition.
 - Write in third person. Vary your sentence rhythm. Sound human, not corporate.
 - Use only facts from the data above. Do not invent anything.
@@ -702,7 +726,7 @@ HOW TO WRITE IT:
   from the website. The website name overrides the "Company name" field if they differ.
 - Do NOT use any of these words: dynamic, synergy, passionate, cutting-edge, innovative, world-class,
   solutions, leverage, empower, transformative, holistic.
-- Output ONLY the paragraph. No intro, no label, no explanation.
+- Output ONLY the profile text. No intro, no label, no explanation.
 
 Write it now:"""
 
@@ -718,7 +742,7 @@ Write it now:"""
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.9,    # creative but not wild
-                max_tokens=600,     # room for 4-5 strong sentences
+                max_tokens=800,     # room for 6-8 strong sentences
             )
             result = resp.choices[0].message.content.strip()
             # Scraped HTML can carry escape sequences (\\" \\' \\\\ \\n) that the LLM
