@@ -636,8 +636,6 @@ async def summarize_employer_profile(employer_data: dict) -> str:
             line1_parts.append("is a company")
         if location_str:
             line1_parts.append(f"based in {location_str}")
-        else:
-            line1_parts.append("based in Canada")
         line1 = " ".join(line1_parts) + "."
 
         line2 = (
@@ -647,15 +645,15 @@ async def summarize_employer_profile(employer_data: dict) -> str:
         )
 
         line3 = (
-            f"Operating in the {industry} sector, {company_name} serves clients across Canada with a commitment to high standards."
+            f"Operating in the {industry} sector, {company_name} is committed to delivering high standards for every client they serve."
             if industry
-            else f"{company_name} serves clients across Canada and is committed to delivering value in everything they do."
+            else f"{company_name} is committed to delivering real value in everything they do."
         )
 
         line4 = (
-            f"As a {company_type}, they operate with the agility and focus needed to meet the evolving demands of the Canadian market."
+            f"As a {company_type}, they bring the focus and agility needed to meet the evolving demands of their market."
             if company_type
-            else "They operate with the agility and focus needed to meet the evolving demands of the Canadian market."
+            else "They bring the focus and agility needed to meet the evolving demands of their industry."
         )
 
         line5 = f"The team at {company_name} values excellence, collaboration, and a strong work culture that supports growth at every level."
@@ -699,29 +697,26 @@ async def summarize_employer_profile(employer_data: dict) -> str:
     # Scraped site is most trustworthy → legalName → companyName
     display_name = company_name  # default; LLM will override from scraped content via rule below
 
-    prompt = f"""You are a world-class brand copywriter hired to write employer profiles for a premium Canadian job board.
+    prompt = f"""You are a world-class brand copywriter hired to write employer profiles for a premium job board.
 Your writing makes people stop scrolling. It is specific, confident, and reads like it was written by someone
 who actually researched this company — because you did (see the data below).
-
-CONTEXT: This platform serves Canadian businesses and job seekers. Most employers operate in Canada.
-When relevant, acknowledge the Canadian market, province, or local community naturally.
 
 COMPANY DATA:
 {facts_block}{scraped_block}
 
 YOUR TASK:
-Write a minimum of 6 sentences (you may write up to 8) that serve as this company's profile on a Canadian job board.
+Write a minimum of 6 sentences (you may write up to 8) that serve as this company's profile on a job board.
 Do NOT write a single dense paragraph — vary your sentence length and rhythm so it reads naturally.
 
 HOW TO WRITE IT:
 - Open with a strong, specific hook about what this company actually does — not what industry it's in.
   Lead with their work, their product, their specialty. Make it tangible.
 - Describe what makes them stand out in their market or community — their focus, their clients, their craft.
-- Weave in location (city/province), team size, and company type naturally — never as a list.
-- Include a sentence on their presence or relevance in the Canadian market or local community where applicable.
+- Weave in the actual location, team size, and company type naturally — never as a list.
+  Use ONLY the location from the data above. Do NOT invent or assume any country or city.
 - Close with something that makes a job seeker want to work there — culture, impact, growth, or ambition.
 - Write in third person. Vary your sentence rhythm. Sound human, not corporate.
-- Use only facts from the data above. Do not invent anything.
+- Use ONLY facts from the data above. Do not invent, assume, or hallucinate anything — especially location.
 - If scraped website content is provided: trust it completely — use the company name, services, and tone
   from the website. The website name overrides the "Company name" field if they differ.
 - Do NOT use any of these words: dynamic, synergy, passionate, cutting-edge, innovative, world-class,
