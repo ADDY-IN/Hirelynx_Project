@@ -147,10 +147,20 @@ async def summarize_and_update_job(
     job_data: JobProfile,
 ):
     """
-    Accepts a full JobProfile JSON payload from the recruiter frontend.
-    Generates an AI summary using all structured fields (title, description,
-    responsibilities, salary, experience level, location, skills, etc.)
-    and returns it. No auth required — Node.js backend calls this directly.
+    Accepts a full JobProfile JSON payload from the recruiter frontend and
+    generates a fully AI-written job summary via Groq LLM.
+
+    Gate: the following fields must be present before generation is attempted
+      - title         (non-empty)
+      - category      (non-empty — the user must select a category)
+      - responsibilities OR requiredSkills  (at least one item in either list)
+
+    Fields that are pre-selected by default (employmentType, experienceLevel,
+    workSchedule, compensationType, salary slider, country) are intentionally
+    excluded from the gate — they carry no signal about form completion.
+
+    Returns 400 with a descriptive message if the gate fails or if Groq is down.
+    No auth required — Node.js backend calls this directly.
     """
     try:
         generated_summary = generate_job_summary_from_profile(job_data)

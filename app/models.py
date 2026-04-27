@@ -261,7 +261,7 @@ class EmployerProfile(BaseModel):
     """
     firstName: Optional[str] = None
     lastName: Optional[str] = None
-    companyName: str
+    companyName: Optional[str] = None
     companyWebsite: Optional[str] = None
     companyDescription: Optional[str] = None
     industry: Optional[str] = None

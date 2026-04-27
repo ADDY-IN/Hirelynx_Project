@@ -40,6 +40,12 @@ def extract_text(file_path: str) -> str:
                 if para.text and para.text.strip()
             ).strip()
 
+        elif extension == ".doc":
+            import mammoth
+            with open(file_path, "rb") as f:
+                result = mammoth.extract_raw_text(f)
+            text = result.value.strip()
+
         elif extension == ".txt":
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read().strip()

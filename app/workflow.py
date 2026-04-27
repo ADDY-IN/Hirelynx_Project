@@ -417,10 +417,72 @@ def generate_job_summary_from_text(text: str) -> str:
 def generate_job_summary_from_profile(job_data) -> str:
     """
     Generate a natural AI-quality job summary from a structured JobProfile.
-    Uses all available fields: title, description, responsibilities, salary,
-    experience level, location, skills, work auth, etc.
+    Uses all available fields: title, category, description, responsibilities,
+    salary, experience level, location, skills, work auth, etc.
+
+    Gate logic — based on the "Create Job" form:
+      Fields that are ALWAYS pre-selected on page load and therefore do NOT
+      count as user-provided signal:
+        • employmentType  (default: Full Time)
+        • experienceLevel (default: Entry Level)
+        • workSchedule   (default: Day Shift)
+        • compensationType (default: Salary)
+        • salaryMin / salaryMax (default slider: 2000 / 8000)
+        • country (default: Canada)
+        • vacancies (default: 1)
+        • applicationDeadline (default: today)
+
+      Fields the user must ACTIVELY fill in before we call the LLM:
+        1. title       — required (the job title text input)
+        2. category    — required (the job category dropdown, empty by default)
+        3. At least one of:
+             • responsibilities  — at least 1 item entered
+             • requiredSkills    — at least 1 skill entered
+
+    Raises ValueError with a clear message if the gate fails, so the
+    frontend receives a 400 and can prompt the user to complete the form.
     """
     from app.summarizer_service import generate_job_summary
+
+    def _get(field: str, default=None):
+        if isinstance(job_data, dict):
+            return job_data.get(field, default)
+        return getattr(job_data, field, default)
+
+    # ── Gate check 1: title ───────────────────────────────────────────────────
+    title = (_get("title") or "").strip()
+    if not title:
+        raise ValueError(
+            "Job summary requires a Job Title. Please fill in the title first."
+        )
+
+    # ── Gate check 2: category ────────────────────────────────────────────────
+    # The category dropdown is empty by default — the user must pick one.
+    category = (_get("category") or "").strip()
+    if not category:
+        raise ValueError(
+            "Job summary requires a Job Category to be selected."
+        )
+
+    # ── Gate check 3: at least one substantive content field ─────────────────
+    # Employment type, experience level, work schedule, salary, and country are
+    # always pre-filled defaults — they carry no signal that the user has
+    # meaningfully described the role. We need responsibilities OR skills.
+    responsibilities = _get("responsibilities") or []
+    required_skills  = _get("requiredSkills") or [] or _get("skills") or []
+
+    has_content = (
+        (isinstance(responsibilities, list) and len(responsibilities) > 0)
+        or (isinstance(required_skills, list) and len(required_skills) > 0)
+    )
+
+    if not has_content:
+        raise ValueError(
+            "Job summary requires at least one Key Responsibility or Required Skill "
+            "to be filled in before generating."
+        )
+    # ── End gate ──────────────────────────────────────────────────────────────
+
     return generate_job_summary(job_data)
 
 def run_matching() -> int:

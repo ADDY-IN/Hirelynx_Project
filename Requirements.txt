@@ -1,5 +1,6 @@
 pymupdf
 python-docx
+mammoth
 pandas
 numpy
 scikit-learn

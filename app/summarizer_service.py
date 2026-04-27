@@ -448,59 +448,114 @@ _WORK_SCHEDULE_LABELS: Dict[str, str] = {
 
 def generate_job_summary(job_data) -> str:
     """
-    Generate a job post summary using local Ollama (llama3.1).
-    If Ollama is not running, falls back to a simple template sentence.
+    Generate a fully AI-written job post summary via Groq LLM.
+    Uses all available structured fields from the Create Job form:
+    title, category, employment type, experience level, work schedule,
+    compensation, location (city/province/country), responsibilities,
+    skills, remote flag, work authorization, and description.
+
+    Raises RuntimeError if Groq is unavailable — no hardcoded fallbacks.
     """
     def get(field: str, default=None):
         if isinstance(job_data, dict):
             return job_data.get(field, default)
         return getattr(job_data, field, default)
 
-    # Build compact job dict for the prompt
+    # ── Collect every field the form can send ────────────────────────────────
+    # Location: prefer granular city/province/country over the legacy 'location' string
+    city     = (get("city")     or "").strip()
+    province = (get("province") or "").strip()
+    country  = (get("country")  or "").strip()
+    loc_parts = [p for p in [city, province, country] if p]
+    location_str = ", ".join(loc_parts) if loc_parts else (get("location") or "").strip() or None
+
+    # Salary display
+    sal_min  = get("salaryMin")
+    sal_max  = get("salaryMax")
+    currency = (get("currency") or "CAD").upper()
+    salary_str = None
+    if sal_min and sal_max:
+        salary_str = f"{currency} {int(sal_min):,} – {int(sal_max):,}"
+    elif sal_min:
+        salary_str = f"{currency} {int(sal_min):,}+"
+
+    # Experience level: prefer structured label, fall back to min/max years
+    exp_level = (get("experienceLevel") or "").replace("_", " ").title().strip() or None
+    exp_min   = get("experienceMin")
+    exp_max   = get("experienceMax")
+    exp_str   = exp_level
+    if not exp_str and (exp_min is not None or exp_max is not None):
+        if exp_min and exp_max:
+            exp_str = f"{int(exp_min)}–{int(exp_max)} years"
+        elif exp_min:
+            exp_str = f"{int(exp_min)}+ years"
+
+    # Build a clean dict — only fields that actually have a value
     job_dict = {
-        "title":            (get("title") or "").strip(),
-        "location":         (get("location") or "").strip() or None,
-        "employmentType":   (get("employmentType") or "").replace("_", " ").title() or None,
-        "experienceMin":    get("experienceMin"),
-        "experienceMax":    get("experienceMax"),
-        "salaryMin":        get("salaryMin"),
-        "salaryMax":        get("salaryMax"),
-        "currency":         (get("currency") or "CAD").upper(),
-        "isRemote":         get("isRemote") or False,
-        "responsibilities": (get("responsibilities") or [])[:5],
-        "requiredSkills":   (get("requiredSkills") or [])[:6],
-        "description":      ((get("description") or "")[:300]) or None,
+        k: v for k, v in {
+            "jobTitle":           (get("title") or "").strip(),
+            "category":           (get("category") or "").strip() or None,
+            "employmentType":     (get("employmentType") or "").replace("_", " ").title() or None,
+            "experienceRequired": exp_str,
+            "workSchedule":       (get("workSchedule") or "").replace("_", " ").title() or None,
+            "compensationType":   (get("compensationType") or "").replace("_", " ").title() or None,
+            "salaryRange":        salary_str,
+            "location":           location_str,
+            "remote":             True if get("isRemote") else None,
+            "responsibilities":   (get("responsibilities") or [])[:6] or None,
+            "requiredSkills":     ((get("requiredSkills") or []) or (get("skills") or []))[:8] or None,
+            "workAuthRequired":   True if get("requiresWorkAuthorization") else None,
+            "openToInternational":True if get("openToInternationalCandidates") else None,
+            "description":        ((get("description") or "")[:400]) or None,
+        }.items()
+        if v not in (None, [], "", False)
     }
-    job_dict = {k: v for k, v in job_dict.items() if v not in (None, [], "")}
 
-    prompt = f"""Write a professional job post summary paragraph for this job.
+    prompt = f"""You are writing a job posting for a job board. Write a compelling, professional summary paragraph for this role.
 
-Rules:
-- 6-8 natural sentences, under 220 words
-- Written in third person (e.g. "We are looking for...", "The ideal candidate...")
-- Sound like a real job posting, not a template
-- Include the most important details (role, skills, location, experience if present)
-- No buzzwords like "dynamic", "synergy", "passionate"
+Instructions:
+- Write 6 to 8 complete sentences, under 230 words total
+- Use third person ("We are looking for...", "The successful candidate...", "This role involves...")
+- Sound like a real human wrote it — not a template or checklist
+- Naturally weave in the role details: job title, category, employment type, location, experience level, work schedule, salary range, and required skills
+- Highlight 2–3 key responsibilities as the core of the role
+- End with a line about what makes this a good opportunity or team to join
+- Do NOT use: "dynamic", "synergy", "passionate", "cutting-edge", "innovative", "leverage", "empower"
+- Do NOT list bullet points — write flowing prose only
 
-Job data:
+Job details:
 {json.dumps(job_dict, indent=2)}
 
-Return ONLY the summary paragraph, nothing else."""
+Return ONLY the summary paragraph. No headers, no labels, no extra text."""
 
-    result = _llm_generate(prompt)
-    if result:
-        return result
+    # Dedicated Groq call — higher token ceiling than the shared _llm_generate
+    # helper (400 tokens) to ensure 6-8 sentences are never truncated.
+    try:
+        from app.config import settings
+        from groq import Groq
+        api_key = getattr(settings, "GROQ_API_KEY", None)
+        if not api_key:
+            raise RuntimeError(
+                "Job summary generation failed: GROQ_API_KEY is not configured on this server."
+            )
+        client = Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.75,
+            max_tokens=600,   # 230-word target; 400 risks truncation mid-sentence
+        )
+        result = resp.choices[0].message.content.strip()
+        if result:
+            return result
+    except RuntimeError:
+        raise   # re-raise config errors as-is without wrapping
+    except Exception as e:
+        logger.warning(f"Groq job summary call failed: {e}")
 
-    # Simple fallback if Ollama is not running
-    title = job_dict.get("title", "professional")
-    skills = job_dict.get("requiredSkills", [])
-    location = job_dict.get("location", "")
-    sk_str = ", ".join(skills[:4]) if skills else ""
-    loc_str = f" based in {location}" if location else ""
-    return (
-        f"We are looking for a {title}{loc_str}."
-        + (f" The ideal candidate will have experience with {sk_str}." if sk_str else "")
-        + " This is an exciting opportunity to join a growing team."
+    raise RuntimeError(
+        "Job summary generation failed: the AI service (Groq) is currently unavailable. "
+        "Please try again in a moment."
     )
 
 
@@ -508,7 +563,7 @@ Return ONLY the summary paragraph, nothing else."""
 # Employer Website Scraper
 # ---------------------------------------------------------------------------
 
-async def scrape_website_text(url: str, timeout: float = 15.0) -> Optional[str]:
+async def scrape_website_text(url: str, timeout: float = 30.0) -> Optional[str]:
     """
     Fetches and extracts meaningful text from a company website.
     Tries homepage, then /about and /about-us sub-pages.
@@ -592,7 +647,7 @@ async def summarize_employer_profile(employer_data: dict) -> str:
       3. Dedicated Groq call (higher temp + more tokens than shared helper)
       4. Last-resort fallback if Groq is down
     """
-    company_name = employer_data.get("companyName", "The company")
+    company_name = employer_data.get("companyName") or "The company"
     description  = employer_data.get("companyDescription") or ""
     industry     = employer_data.get("industry") or ""
     company_type = employer_data.get("companyType") or ""
@@ -616,51 +671,20 @@ async def summarize_employer_profile(employer_data: dict) -> str:
             logger.info(f"Scrape returned no content for {website}")
 
     # --- Step 2: Data richness gate ---
-    # "Rich" = we have something substantive the LLM can actually work with.
-    # Scraped website content OR a real employer description (>30 chars) qualifies.
+    # We prioritize scraped content above all else.
+    # If we have a website, we MUST try to use the LLM to generate a summary from it,
+    # even if other fields are missing.
     has_rich_content = bool(scraped_text) or bool(description and len(description.strip()) > 30)
 
-    if not has_rich_content:
-        # Not enough info to write a meaningful AI summary without hallucinating.
-        # Return a clean, honest 6-line factual profile from the available fields.
+    # If we have NO website and NO description, we fall back to a factual template.
+    # But if we have a website, we proceed to Step 3 (LLM) regardless of description length.
+    if not has_rich_content and not website:
         logger.info(f"Insufficient data for AI summary — returning factual template for '{company_name}'")
+        line1 = f"{company_name} is a company based in {location_str}." if location_str else f"{company_name} is a professional organization."
+        line2 = f"They operate in the {industry} industry." if industry else ""
+        line3 = f"With a team of {company_size} employees, they are committed to delivering quality work." if company_size else ""
+        return " ".join(filter(bool, [line1, line2, line3]))
 
-        line1_parts: list[str] = [company_name]
-        if company_type and industry:
-            line1_parts.append(f"is a {company_type} in the {industry} industry")
-        elif company_type:
-            line1_parts.append(f"is a {company_type}")
-        elif industry:
-            line1_parts.append(f"operates in the {industry} industry")
-        else:
-            line1_parts.append("is a company")
-        if location_str:
-            line1_parts.append(f"based in {location_str}")
-        line1 = " ".join(line1_parts) + "."
-
-        line2 = (
-            f"With a team of {company_size} employees, they bring focused expertise and a hands-on approach to their work."
-            if company_size
-            else f"{company_name} is a dedicated team committed to delivering quality work for their clients and community."
-        )
-
-        line3 = (
-            f"Operating in the {industry} sector, {company_name} is committed to delivering high standards for every client they serve."
-            if industry
-            else f"{company_name} is committed to delivering real value in everything they do."
-        )
-
-        line4 = (
-            f"As a {company_type}, they bring the focus and agility needed to meet the evolving demands of their market."
-            if company_type
-            else "They bring the focus and agility needed to meet the evolving demands of their industry."
-        )
-
-        line5 = f"The team at {company_name} values excellence, collaboration, and a strong work culture that supports growth at every level."
-
-        line6 = f"{company_name} is currently growing their team and welcoming new talent through Hirelynx."
-
-        return " ".join(filter(bool, [line1, line2, line3, line4, line5, line6]))
 
     # --- Step 3: Build rich, data-anchored prompt (only reached when we have real content) ---
     # List only fields that actually have content so the LLM can't hide behind
@@ -685,13 +709,15 @@ async def summarize_employer_profile(employer_data: dict) -> str:
 
     facts_block = "\n".join(f"  • {f}" for f in known_facts) if known_facts else "  • (no additional data provided)"
 
-    scraped_block = ""
     if scraped_text:
         scraped_block = (
             f"\n\nCONTENT SCRAPED FROM {website}:\n"
-            f"{scraped_text[:1500]}\n"
-            "(Use this as the primary source of truth about the company.)"
+            f"{scraped_text[:2000]}\n"
+            "(TRUST THIS SCRAPED CONTENT AS THE PRIMARY SOURCE. If the company name or details differ from the fields above, use what you found on the website.)"
         )
+    elif website:
+        scraped_block = f"\n\n(Note: We have a website {website} but scraping failed. If you can infer anything from the URL or other fields, do so, otherwise keep it very professional and slightly more general but specific to the industry if provided.)"
+
 
     # Determine the best name to anchor the summary:
     # Scraped site is most trustworthy → legalName → companyName
@@ -717,8 +743,9 @@ HOW TO WRITE IT:
 - Close with something that makes a job seeker want to work there — culture, impact, growth, or ambition.
 - Write in third person. Vary your sentence rhythm. Sound human, not corporate.
 - Use ONLY facts from the data above. Do not invent, assume, or hallucinate anything — especially location.
-- If scraped website content is provided: trust it completely — use the company name, services, and tone
-  from the website. The website name overrides the "Company name" field if they differ.
+- If scraped website content is provided: TRUST IT COMPLETELY. Use the company name, services, and tone found on the site.
+- IF THE COMPANY NAME IS MISSING OR GENERIC (like "The company"), IDENTIFY THE REAL COMPANY NAME FROM THE SCRAPED CONTENT OR WEBSITE URL.
+- The website content is your source of truth. If it describes products, services, or a specific mission, highlight those.
 - Do NOT use any of these words: dynamic, synergy, passionate, cutting-edge, innovative, world-class,
   solutions, leverage, empower, transformative, holistic.
 - Output ONLY the profile text. No intro, no label, no explanation.
