@@ -452,17 +452,13 @@ def generate_job_summary_from_profile(job_data) -> str:
     # ── Gate check 1: title ───────────────────────────────────────────────────
     title = (_get("title") or "").strip()
     if not title:
-        raise ValueError(
-            "Job summary requires a Job Title. Please fill in the title first."
-        )
+        raise ValueError("Please enter a job title first")
 
     # ── Gate check 2: category ────────────────────────────────────────────────
     # The category dropdown is empty by default — the user must pick one.
     category = (_get("category") or "").strip()
     if not category:
-        raise ValueError(
-            "Job summary requires a Job Category to be selected."
-        )
+        raise ValueError("Please select a job category first")
 
     # ── Gate check 3: at least one substantive content field ─────────────────
     # Employment type, experience level, work schedule, salary, and country are
@@ -478,8 +474,7 @@ def generate_job_summary_from_profile(job_data) -> str:
 
     if not has_content:
         raise ValueError(
-            "Job summary requires at least one Key Responsibility or Required Skill "
-            "to be filled in before generating."
+            "Please enter at least one responsibility or skill before generating a summary"
         )
     # ── End gate ──────────────────────────────────────────────────────────────
 

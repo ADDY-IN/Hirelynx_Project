@@ -262,7 +262,8 @@ class EmployerProfile(BaseModel):
     firstName: Optional[str] = None
     lastName: Optional[str] = None
     companyName: Optional[str] = None
-    companyWebsite: Optional[str] = None
+    companyWebsite: Optional[str] = Field(None, alias="websiteUrl", serialization_alias="companyWebsite")
+    # We also check 'website' and 'company_website' in the summarizer for extra safety.
     companyDescription: Optional[str] = None
     industry: Optional[str] = None
     companySize: Optional[str] = None

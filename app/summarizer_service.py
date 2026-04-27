@@ -647,7 +647,16 @@ async def summarize_employer_profile(employer_data: dict) -> str:
       3. Dedicated Groq call (higher temp + more tokens than shared helper)
       4. Last-resort fallback if Groq is down
     """
-    company_name = employer_data.get("companyName") or "The company"
+    # Robust key lookup for the website URL (handles different frontend naming conventions)
+    website = (
+        employer_data.get("companyWebsite") or 
+        employer_data.get("website") or 
+        employer_data.get("websiteUrl") or 
+        employer_data.get("company_website") or 
+        ""
+    ).strip()
+
+    company_name = employer_data.get("companyName") or employer_data.get("legalName") or "The company"
     description  = employer_data.get("companyDescription") or ""
     industry     = employer_data.get("industry") or ""
     company_type = employer_data.get("companyType") or ""
@@ -655,8 +664,8 @@ async def summarize_employer_profile(employer_data: dict) -> str:
     city         = employer_data.get("city") or ""
     province     = employer_data.get("province") or ""
     country      = employer_data.get("country") or ""
-    website      = employer_data.get("companyWebsite") or ""
     legal_name   = employer_data.get("legalName") or ""
+
 
     location_parts = [p for p in [city, province, country] if p]
     location_str   = ", ".join(location_parts)
@@ -664,7 +673,7 @@ async def summarize_employer_profile(employer_data: dict) -> str:
     # --- Step 1: Scrape website ---
     scraped_text: Optional[str] = None
     if website:
-        scraped_text = await scrape_website_text(website, timeout=15.0)
+        scraped_text = await scrape_website_text(website, timeout=30.0)
         if scraped_text:
             logger.info(f"Scraped {len(scraped_text)} chars from {website}")
         else:
