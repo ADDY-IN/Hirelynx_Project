@@ -685,14 +685,13 @@ async def summarize_employer_profile(employer_data: dict) -> str:
     # even if other fields are missing.
     has_rich_content = bool(scraped_text) or bool(description and len(description.strip()) > 30)
 
-    # If we have NO website and NO description, we fall back to a factual template.
-    # But if we have a website, we proceed to Step 3 (LLM) regardless of description length.
+    # If we have NO website and NO description, we stop here.
+    # The user wants summaries to be driven by real data (primarily the URL).
     if not has_rich_content and not website:
-        logger.info(f"Insufficient data for AI summary — returning factual template for '{company_name}'")
-        line1 = f"{company_name} is a company based in {location_str}." if location_str else f"{company_name} is a professional organization."
-        line2 = f"They operate in the {industry} industry." if industry else ""
-        line3 = f"With a team of {company_size} employees, they are committed to delivering quality work." if company_size else ""
-        return " ".join(filter(bool, [line1, line2, line3]))
+        raise ValueError(
+            "Please provide a Website URL or a Company Description to generate an AI summary."
+        )
+
 
 
     # --- Step 3: Build rich, data-anchored prompt (only reached when we have real content) ---
