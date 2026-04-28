@@ -800,6 +800,109 @@ Write it now:"""
 
 
 
+async def generate_personalized_responsibilities(
+    job_title: str,
+    noc_title: str,
+    base_duties: List[str],
+    company_name: Optional[str] = None,
+    category: Optional[str] = None
+) -> List[str]:
+    """
+    Takes base duties from NOC and personalizes them for a specific job title and company using Groq.
+    """
+    context = f"Job Title: {job_title}\nNOC Reference Title: {noc_title}"
+    if company_name:
+        context += f"\nCompany: {company_name}"
+    if category:
+        context += f"\nCategory: {category}"
+
+    prompt = f"""You are an expert HR Consultant and Job Architect.
+Your task is to take a list of standard NOC (National Occupational Classification) duties and rewrite them into 5-7 highly professional, compelling, and personalized responsibilities for a specific job posting.
+
+{context}
+
+Standard NOC Duties:
+{chr(10).join(f"- {d}" for d in base_duties)}
+
+Instructions:
+1. Rewrite these duties to sound like they belong to the specific "Job Title" provided.
+2. If a "Company" is provided, subtly reflect a tone of high-ambition and professional excellence suitable for that company.
+3. Use active, strong verbs (e.g., "Architect," "Spearhead," "Orchestrate," "Execute").
+4. Ensure the tone is premium, modern, and engaging.
+5. Ensure each responsibility ends with a full stop (period).
+6. Do NOT just copy-paste the duties; synthesize them into a coherent list of responsibilities.
+7. Return ONLY a JSON array of strings. No intro, no markdown blocks, no numbering.
+
+Example output: ["Spearhead the development of...", "Orchestrate cross-functional teams to...", ...]
+"""
+    result = _llm_generate(prompt)
+    if result:
+        try:
+            # Clean up potential markdown blocks if LLM ignores instructions
+            cleaned = result.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:-3].strip()
+            elif cleaned.startswith("```"):
+                cleaned = cleaned[3:-3].strip()
+            
+            import json
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception as e:
+            logger.warning(f"Failed to parse AI responsibilities: {e}. Raw: {result}")
+    
+    # Fallback: just return the first 6 base duties if AI fails
+    return [d.strip() for d in base_duties[:6]]
+
+
+async def generate_responsibilities_from_scratch(
+    job_title: str,
+    company_name: Optional[str] = None,
+    category: Optional[str] = None
+) -> List[str]:
+    """
+    Generates professional responsibilities from scratch using LLM when no NOC match is found.
+    """
+    context = f"Job Title: {job_title}"
+    if company_name:
+        context += f"\nCompany: {company_name}"
+    if category:
+        context += f"\nCategory: {category}"
+
+    prompt = f"""You are an expert HR Consultant and Senior Recruiter.
+Your task is to generate 5-7 highly professional, compelling, and modern responsibilities for a specific job posting.
+
+{context}
+
+Instructions:
+1. Create responsibilities that perfectly align with the "Job Title" provided.
+2. If a "Company" is provided, ensure the tone reflects a high-growth, ambitious environment.
+3. Use active, strong verbs (e.g., "Spearhead," "Orchestrate," "Execute," "Architect").
+4. Ensure the tone is premium and executive-grade.
+5. Each responsibility must end with a full stop (period).
+6. Return ONLY a JSON array of strings. No intro, no markdown blocks, no numbering.
+
+Example output: ["Lead the design and implementation of...", "Orchestrate cross-functional teams to...", ...]
+"""
+    result = _llm_generate(prompt)
+    if result:
+        try:
+            cleaned = result.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:-3].strip()
+            elif cleaned.startswith("```"):
+                cleaned = cleaned[3:-3].strip()
+            
+            import json
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception as e:
+            logger.error(f"Failed to parse scratch responsibilities: {e}")
+    
+    # Static fallback for major failure
+    return [f"Execute core functions related to the {job_title} role.", f"Collaborate with team members to drive results."]
 
 
 

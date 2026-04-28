@@ -2,7 +2,7 @@ import re
 import os
 import fitz  # PyMuPDF
 from docx import Document
-from typing import List
+from typing import List, Optional
 
 # --- Text Extraction ---
 
@@ -214,6 +214,36 @@ def extract_user_id_from_token(token: str) -> int:
         raise ValueError("Could not find user ID field in JWT payload")
     except Exception as e:
         raise ValueError(f"Invalid token format: {str(e)}")
+
+def extract_role_from_token(token: str) -> Optional[str]:
+    """
+    Decodes a JWT auth token payload and extracts the user role.
+    Does not verify signatures (assumes API Gateway or frontend handles auth verification),
+    just extracts the 'role' from the base64-encoded payload.
+    """
+    if not token:
+        return None
+    
+    # If it's just a raw number, it's likely a dev ID with no role
+    if str(token).isdigit():
+        return None
+        
+    try:
+        parts = token.split('.')
+        if len(parts) >= 2:
+            payload_b64 = parts[1]
+            padding = 4 - (len(payload_b64) % 4)
+            if padding < 4:
+                payload_b64 += '=' * padding
+            
+            payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+            payload = json.loads(payload_json)
+            
+            return payload.get("role")
+                
+    except Exception:
+        pass
+    return None
 
 # --- JD Keyword Processing ---
 

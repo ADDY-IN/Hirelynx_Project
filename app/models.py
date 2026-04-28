@@ -69,6 +69,15 @@ class DBJob(Base):
     createdAt                    = Column(DateTime, default=datetime.utcnow)
     updatedAt                    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class DBNocOccupation(Base):
+    __tablename__ = "noc_occupations"
+    nocCode = Column(String(5), primary_key=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    mainDuties = Column(JSON, nullable=True) # Postgres text[] maps well to JSON in SQLAlchemy for read
+    illustrativeExamples = Column(JSON, nullable=True)
+    isActive = Column(Boolean, default=True)
+
 class DBMatch(Base):
     __tablename__ = "matches"
     id               = Column(Integer, primary_key=True, index=True)
@@ -250,6 +259,14 @@ class ResumeMatchRequest(BaseModel):
     """Request body for POST /v1/scoring/match-resume"""
     s3_key: str
     job_id: int
+
+
+class NocPersonalizeRequest(BaseModel):
+    """Request body for POST /v1/recruiter/noc/personalize-responsibilities"""
+    nocCode: str
+    jobTitle: str
+    companyName: Optional[str] = None
+    category: Optional[str] = None
 
 
 class EmployerProfile(BaseModel):

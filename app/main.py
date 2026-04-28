@@ -5,14 +5,17 @@ from typing import List, Optional
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.models import (CandidateProfile, JobProfile, MatchScore, DBCandidate, DBJob,
-                        ResumeMatchRequest, CandidateSearchRequest, EmployerProfile)
+                        ResumeMatchRequest, CandidateSearchRequest, EmployerProfile,
+                        DBNocOccupation, NocPersonalizeRequest)
 from app.workflow import (parse_only,
                           generate_job_summary_from_profile,
                           score_from_s3_and_job)
 from app.database import get_db
 from app.config import settings
-from app.utils import encode_id, decode_id, extract_user_id_from_token
-from app.summarizer_service import summarizer_service
+from app.utils import encode_id, decode_id, extract_user_id_from_token, extract_role_from_token
+from app.summarizer_service import (summarizer_service, 
+                                     generate_personalized_responsibilities,
+                                     generate_responsibilities_from_scratch)
 from app.search_service import SearchService
 
 app = FastAPI(title=settings.PROJECT_NAME, version="1.0.0")
@@ -211,3 +214,56 @@ async def create_employer_company_profile(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# --- 7. NOC: Personalize Responsibilities ---
+
+@app.get("/v1/recruiter/noc/responsibilities")
+async def get_job_responsibilities(
+    jobTitle: str,
+    companyName: Optional[str] = None,
+    category: Optional[str] = None,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetches personalized responsibilities for a job title.
+    1. Searches for a NOC match in the database by title.
+    2. If found, uses NOC duties + AI to personalize.
+    3. If NOT found, uses AI to generate responsibilities from scratch.
+    Requires ADMIN or EMPLOYER token.
+    """
+    try:
+        # 1. Authorize: Only ADMIN or EMPLOYER allowed
+        token = credentials.credentials
+        role = extract_role_from_token(token)
+        if role not in ["ADMIN", "EMPLOYER"]:
+             if not (str(token).isdigit() and int(token) > 0):
+                 raise HTTPException(status_code=403, detail="Access denied.")
+
+        # 2. Search for NOC match by Title
+        # Try an exact-ish match first using ILIKE
+        noc = db.query(DBNocOccupation).filter(DBNocOccupation.title.ilike(f"%{jobTitle}%")).first()
+
+        if noc and noc.mainDuties:
+            # Match found! Use NOC duties + AI personalization
+            responsibilities = await generate_personalized_responsibilities(
+                job_title    = jobTitle,
+                noc_title    = noc.title,
+                base_duties  = noc.mainDuties,
+                company_name = companyName,
+                category     = category
+            )
+        else:
+            # No match found (e.g. "Python Developer")! Generate from scratch via AI
+            responsibilities = await generate_responsibilities_from_scratch(
+                job_title    = jobTitle,
+                company_name = companyName,
+                category     = category
+            )
+
+        return {
+            "responsibilities": responsibilities
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
