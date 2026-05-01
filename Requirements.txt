@@ -20,3 +20,4 @@ spacy
 groq
 httpx
 beautifulsoup4
+google-generativeai

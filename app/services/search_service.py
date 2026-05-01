@@ -26,9 +26,9 @@ import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import List, Dict, Any, Optional
-from app.scoring import ScoringEngine
-from app.config import settings
-from app.utils import encode_id
+from app.services.scoring import ScoringEngine
+from app.core.config import settings
+from app.core.utils import encode_id
 
 logger = logging.getLogger(__name__)
 scoring_engine = ScoringEngine(weight=settings.SCORING_WEIGHT)

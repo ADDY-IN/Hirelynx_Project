@@ -26,7 +26,7 @@ def _get_groq_client():
         return _groq_client
     try:
         from groq import Groq
-        from app.config import settings
+        from app.core.config import settings
         if not settings.GROQ_API_KEY:
             logger.warning("GROQ_API_KEY not set — parser will return empty fields.")
             return None
@@ -103,6 +103,8 @@ Rules:
 - projects.startDate: capture the month/year shown next to the project (e.g. "March-23", "Oct-22")
 - projects.summary: use the one-liner description written below the project title
 - certifications: ONLY include formal professional certifications or courses (e.g. AWS Certified Developer, Google Analytics Certificate). Do NOT include achievements, awards, medals, prizes, competition ranks, or LeetCode/HackerRank scores — those are NOT certifications.
+- workExperience: Capture the FULL professional history. Extract every job, role, and set of responsibilities. DO NOT skip any entries.
+- workExperience.responsibilities: Extract ALL bullet points or duty descriptions for each role as a list of strings. Be thorough.
 - Return empty string "" for any missing field, NOT null
 
 RESUME TEXT:
@@ -171,12 +173,60 @@ def _call_groq(raw_text: str) -> Dict[str, Any]:
         )
         content = response.choices[0].message.content
         return json.loads(content)
-    except json.JSONDecodeError as e:
-        logger.error(f"Groq returned invalid JSON: {e}")
-        return {}
     except Exception as e:
-        logger.error(f"Groq API call failed: {e}")
-        return {}
+        logger.warning(f"Groq parsing failed (Rate Limit/Down). Routing to Gemini: {e}")
+        
+    # ── Fallback to Gemini ───────────────────────────────────────────────
+    # Only gemini-3-flash-preview has a working quota on this account.
+    try:
+        import google.generativeai as genai
+        from app.core.config import settings
+        gemini_api_key = getattr(settings, "GEMINI_API_KEY", None)
+        if not gemini_api_key:
+            logger.error("GEMINI_API_KEY not set — cannot use Gemini fallback.")
+            return {}
+
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-3-flash-preview')
+
+        # Use the same smart-chunked text as Groq for identical coverage
+        gemini_prompt = f"""Extract resume data and return ONLY a JSON object. No markdown. No explanation.
+
+JSON format:
+{{"firstName":"","lastName":"","phone":"","city":"","province":"","country":"","workType":"","summary":"","skills":[],"education":[{{"degree":"","institution":"","fieldOfStudy":"","startDate":"","endDate":""}}],"workExperience":[{{"companyName":"","role":"","startDate":"","endDate":"","currentlyWorking":false,"responsibilities":[]}}],"projects":[{{"title":"","tools":[],"startDate":"","summary":""}}],"certifications":[{{"name":"","issuer":"","issueDate":""}}]}}
+
+Rules:
+- firstName / lastName: candidate's real name only, NEVER a city or job title
+- skills: list every skill/technology mentioned as short strings
+- workType: one of "REMOTE", "HYBRID", "ON_SITE", or "" if not mentioned
+- currentlyWorking: true only if "present", "current", or "ongoing" appears for that job
+
+Resume:
+{text_chunk}"""
+
+        response = model.generate_content(
+            gemini_prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.0,
+                max_output_tokens=8192,
+            )
+        )
+        if response and response.text:
+            raw = response.text.strip()
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                raw = match.group(0)
+            open_count = raw.count('{')
+            close_count = raw.count('}')
+            if open_count > close_count:
+                raw += '}' * (open_count - close_count)
+            logger.info("Successfully parsed resume via Gemini (gemini-3-flash-preview).")
+            return json.loads(raw)
+    except Exception as e:
+        logger.error(f"Gemini fallback parsing failed: {e}")
+
+
+    return {}
 
 
 class ResumeParser:

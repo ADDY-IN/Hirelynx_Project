@@ -5,12 +5,12 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, cast
 from sqlalchemy.orm import Session
 from app.models import DBCandidate, DBJob, DBMatch, CandidateProfile, JobProfile, ResumeParseStatus
-from app.config import settings
-from app.database import SessionLocal
-from app.s3_service import s3_service
-from app.parser import ResumeParser
-from app.scoring import ScoringEngine
-from app.utils import extract_text, clean_text, extract_jd_keywords, sanitize_for_db
+from app.core.config import settings
+from app.db.session import SessionLocal
+from app.services.s3_service import s3_service
+from app.services.parser import ResumeParser
+from app.services.scoring import ScoringEngine
+from app.core.utils import extract_text, clean_text, extract_jd_keywords, sanitize_for_db
 
 logger = logging.getLogger(__name__)
 engine = ScoringEngine(weight=settings.SCORING_WEIGHT)
@@ -110,7 +110,7 @@ def parse_and_store_jd(db: Session, s3_key: str) -> DBJob:
 
 def index_job(db: Session, job_data: JobProfile) -> DBJob:
     """Explicitly indexes/updates a job profile in the AI database, including auto-summarizing its payload."""
-    from app.workflow import generate_job_summary_from_text
+    from app.services.workflow import generate_job_summary_from_text
     
     db_job = None
     if job_data.id:
@@ -408,7 +408,7 @@ def score_from_s3_and_job(
 
 def generate_job_summary_from_text(text: str) -> str:
     """Legacy text-based JD summarizer — kept for backward compatibility."""
-    from app.summarizer_service import summarizer_service
+    from app.services.summarizer import summarizer_service
     if not text:
         return ""
     return summarizer_service.summarize(text, max_length=150)
@@ -442,7 +442,7 @@ def generate_job_summary_from_profile(job_data) -> str:
     Raises ValueError with a clear message if the gate fails, so the
     frontend receives a 400 and can prompt the user to complete the form.
     """
-    from app.summarizer_service import generate_job_summary
+    from app.services.summarizer import generate_job_summary
 
     def _get(field: str, default=None):
         if isinstance(job_data, dict):

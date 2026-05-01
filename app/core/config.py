@@ -3,7 +3,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 # Get the directory where this file is located and find the project root
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# app/core/config.py → go up 3 levels: core → app → project root
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 
 class Settings(BaseSettings):
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     # AI / LLM
     GROQ_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None   # kept for backward compat
+    GEMINI_API_KEY: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=ENV_FILE, case_sensitive=True, extra="ignore")
 

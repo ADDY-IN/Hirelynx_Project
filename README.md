@@ -1,45 +1,64 @@
-# Hirelynx Resume Scorer & Parser
+# Hirelynx AI Backend
 
-A complete resume scoring and parsing service built with Python. It compares resumes against job descriptions using keyword matching (Fuzzy Matching) and semantic similarity (TF-IDF).
+Professional-grade AI recruitment backend for resume parsing, job matching, and candidate intelligence. Built with FastAPI and powered by Groq LLMs.
 
-## Features
+## 🚀 Overview
 
-- **Keyword Matching**: Fuzzy matching of JD keywords against resume tokens.
-- **Semantic Similarity**: TF-IDF based cosine similarity for deeper content analysis.
-- **Categorized Scoring**: Breakdown of how keywords and semantics contribute to the final score.
-- **Schema Validation**: Maps parsed data to a standard `CandidateProfile` Pydantic model.
-- **Workflow Automation**: S3-triggered event processing for both Resumes and JDs.
-- **Batch Matching**: Batch processor to generate match scores across all profiles.
-- **Recommendations**: Specialized functions for Candidate and Employer recommendations.
+Hirelynx is a high-performance microservice that automates the recruitment pipeline. It uses advanced LLMs (Llama 3) and semantic search to bridge the gap between candidate profiles and job requirements.
 
-## Installation
+## 🏗️ New Modular Architecture
 
-1. Clone the repository.
-2. Install dependencies:
+The project has been restructured for professional maintainability and scaling:
+
+```text
+app/
+├── main.py                 # Slim entry point (FastAPI initialization)
+├── api/                    # API Layer (Versioned)
+│   └── v1/                 # Domain-specific routers
+│       ├── candidate.py    # Bio generation & Candidate tools
+│       ├── recruiter.py    # Job summaries & NOC duties
+│       ├── employer.py     # Company profile generation
+│       ├── admin.py        # Smart candidate search
+│       ├── parser.py       # Resume indexing
+│       └── scoring.py      # Match scoring engine
+├── services/               # Service Layer (Business Logic)
+│   ├── summarizer/         # Decomposed summarization logic
+│   ├── parser.py           # Resume parsing engine
+│   ├── scoring.py          # LLM-powered matching engine
+│   ├── search_service.py   # Vector & Filter search
+│   └── workflow.py         # Orchestration & Pipeline logic
+├── models/                 # Data Layer (SQLAlchemy Models)
+├── schemas/                # Data Layer (Pydantic Schemas)
+├── core/                   # Core Infrastructure (Config, Utils)
+└── db/                     # Database Session Management
+```
+
+## ✨ Key Features
+
+- **AI Resume Parsing**: Extracts structured data from PDF/Docx using Groq LLM.
+- **Semantic Job Matching**: Scores candidates against JDs with detailed breakdowns.
+- **Smart Candidate Search**: Hybrid search (Filter + AI semantic ranking).
+- **Personalized Content**: Generates "About Me" bios and tailored Job Responsibilities.
+- **NOC Integration**: Automatically personalizes standard NOC duties for specific companies.
+- **Company Branding**: Scrapes websites to generate high-impact employer profiles.
+
+## 🛠️ Installation & Setup
+
+1. **Clone the repository**
+2. **Setup environment**
+   ```bash
+   cp .env.example .env  # Add your GROQ_API_KEY and AWS credentials
+   ```
+3. **Install dependencies**
    ```bash
    pip install -r Requirements.txt
    ```
+4. **Run the server**
+   ```bash
+   uvicorn app.main:app --reload
+   ```
 
-## Usage
+## 🧪 Testing
 
-### 🚀 Running the Full Workflow Simulation
-To see the complete S3 -> Parser -> Matching -> Recommendation flow:
-```bash
-python test_workflow.py
-```
-
-### Scoring a Local Resume (CLI)
-```bash
-python score_resume.py --resume path/to/resume.pdf --jd "Job description text here"
-```
-
-## Project Structure
-
-- `app/`: Core logic modules.
-  - `workflow.py`: S3 processors and recommendation logic.
-  - `db_service.py`: Simulated database layer.
-  - `scoring.py`: Enhanced scoring engine.
-  - `resume_parser.py`: Pipeline coordinator.
-  - `models.py`: Pydantic data models.
-- `test_workflow.py`: Full system verification script.
-
+- **Interactive Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Workflow Simulation**: `python test_workflow.py`
