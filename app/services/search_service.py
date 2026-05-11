@@ -141,10 +141,10 @@ def _extract_location_phone(parsed_json: Any, personal_details_col: Any = None):
 def _build_card(row, extra: Dict) -> Dict[str, Any]:
     """Build the uniform candidate response card from a DB row."""
     (user_id, email, first_name, last_name, avatar, profile_pic,
-     is_verified, status, created_at,
+     is_verified, user_status, created_at,
      profile_id, skills, education, work_exp,
      parse_status, personal_details_col, parsed_json,
-     job_match_score, matched_skills_list) = row
+     job_match_score, matched_skills_list, application_status) = row
 
     full_name            = f"{first_name or ''} {last_name or ''}".strip() or None
     skill_list           = _skill_names(skills)
@@ -161,7 +161,8 @@ def _build_card(row, extra: Dict) -> Dict[str, Any]:
         "fullName":         full_name,
         "avatar":           avatar or profile_pic,
         "isEmailVerified":  is_verified,
-        "status":           status,
+        "userStatus":       user_status,
+        "status":           application_status or "AVAILABLE",
         "createdAt":        str(created_at) if created_at else None,
         "location":         location,
         "phone":            phone,
@@ -177,9 +178,7 @@ def _build_card(row, extra: Dict) -> Dict[str, Any]:
     return card
 
 
-# ---------------------------------------------------------------------------
 # Main query — fetches all candidates with their latest match score
-# ---------------------------------------------------------------------------
 
 _CANDIDATE_SQL = text("""
     SELECT
@@ -190,7 +189,7 @@ _CANDIDATE_SQL = text("""
         u."avatar",
         u."profilePicture",
         u."isEmailVerified",
-        u.status,
+        u.status        AS user_status,
         u."createdAt",
         cp.id           AS profile_id,
         cp."skills",
@@ -200,7 +199,8 @@ _CANDIDATE_SQL = text("""
         cp."personalDetails",
         cp."resumeParsedJson",
         m."jobMatchScore",
-        m."matchedSkillsList"
+        m."matchedSkillsList",
+        ja.status       AS application_status
     FROM users u
     LEFT JOIN candidate_profiles cp ON cp."userId" = u.id
     LEFT JOIN LATERAL (
@@ -211,6 +211,21 @@ _CANDIDATE_SQL = text("""
         ORDER BY id DESC
         LIMIT 1
     ) m ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT status
+        FROM   job_applications
+        WHERE  "candidateId" = u.id
+        ORDER BY 
+            CASE 
+                WHEN status = 'HIRED' THEN 1
+                WHEN status = 'SHORTLISTED' THEN 2
+                WHEN status = 'INTERVIEW_COMPLETED' THEN 3
+                WHEN status = 'APPLIED' THEN 4
+                WHEN status = 'REJECTED' THEN 5
+                ELSE 6
+            END
+        LIMIT 1
+    ) ja ON TRUE
     WHERE u.role = 'CANDIDATE'
       AND u."deletedAt" IS NULL
     ORDER BY u.id DESC
@@ -219,9 +234,7 @@ _CANDIDATE_SQL = text("""
 
 class SearchService:
 
-    # ----------------------------------------------------------------
     # PUBLIC entry point
-    # ----------------------------------------------------------------
 
     @staticmethod
     def smart_search(
@@ -276,10 +289,10 @@ class SearchService:
         results = []
         for row in rows:
             (user_id, email, first_name, last_name, avatar, profile_pic,
-             is_verified, status, created_at,
+             is_verified, user_status, created_at,
              profile_id, skills, education, work_exp,
              parse_status, personal_details_col, parsed_json,
-             job_match_score, matched_skills_list) = row
+             job_match_score, matched_skills_list, application_status) = row
 
             skill_names = _skill_names(skills)
             skill_lower = [s.lower() for s in skill_names]
@@ -502,10 +515,10 @@ class SearchService:
         scored = []
         for row in rows:
             (user_id, email, first_name, last_name, avatar, profile_pic,
-             is_verified, status, created_at,
+             is_verified, user_status, created_at,
              profile_id, skills, education, work_exp,
              parse_status, personal_details_col, parsed_json,
-             job_match_score, matched_skills_list) = row
+             job_match_score, matched_skills_list, application_status) = row
 
             skill_names_list = _skill_names(skills)
             skill_lower = [s.lower() for s in skill_names_list]
@@ -559,9 +572,7 @@ class SearchService:
         scored.sort(key=lambda c: c.get("aiScore", 0.0), reverse=True)
         return scored[:limit]
 
-    # ----------------------------------------------------------------
     # SUGGESTIONS: dynamic AI-search prompt chips
-    # ----------------------------------------------------------------
 
     @staticmethod
     def get_suggestions(db: Session, count: int = 6) -> List[str]:
@@ -662,9 +673,7 @@ class SearchService:
         random.shuffle(unique)
         return unique[:count]
 
-    # ----------------------------------------------------------------
     # LEGACY: kept for backward compatibility (old admin search endpoint)
-    # ----------------------------------------------------------------
 
     @staticmethod
     def search_candidates(db: Session, query: str, user_id: Optional[int] = None, limit: int = 50) -> List[Dict[str, Any]]:

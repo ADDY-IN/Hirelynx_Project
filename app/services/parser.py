@@ -111,9 +111,8 @@ RESUME TEXT:
 {raw_text}"""
 
 
-# ---------------------------------------------------------------------------
-# Regex helpers (no API cost for these)
-# ---------------------------------------------------------------------------
+# Regex helpers 
+
 def _extract_email(text: str) -> Optional[str]:
     m = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text)
     return m.group(0) if m else None
@@ -136,11 +135,8 @@ def _extract_phone(text: str) -> Optional[str]:
     m = re.search(r"\b\d{10}\b", cleaned)
     return m.group(0) if m else None
 
-
-
-# ---------------------------------------------------------------------------
 # Main parser
-# ---------------------------------------------------------------------------
+
 def _call_groq(raw_text: str) -> Dict[str, Any]:
     """Send resume text to Groq, return parsed dict."""
     client = _get_groq_client()

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # AI / LLM
     GROQ_API_KEY: Optional[str] = None
-    OPENAI_API_KEY: Optional[str] = None   # kept for backward compat
+    OPENAI_API_KEY: Optional[str] = None   # kept for backward compat   x
     GEMINI_API_KEY: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=ENV_FILE, case_sensitive=True, extra="ignore")

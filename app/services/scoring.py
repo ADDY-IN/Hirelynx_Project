@@ -364,11 +364,11 @@ class ScoringEngine:
         job_responsibilities = kwargs.get("job_responsibilities", [])
         exp_min = kwargs.get("exp_min", 0)
         
-        # 1. Always extract objective facts first
+        # Extract objective facts first
         c_years = self._extract_years(parsed_json, resume_text)
         c_resps = self._extract_responsibilities(parsed_json, resume_text)
 
-        # 2. Try Groq for intelligent matching
+        # Try Groq for intelligent matching
         ai_data = self._groq_score(
             resume_text=resume_text,
             job_description=job_description,
