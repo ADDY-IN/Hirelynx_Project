@@ -447,7 +447,7 @@ class SearchService:
                 text_blob = (
                     f"{full_name} {email_str} {' '.join(skill_lower)} "
                     f"{candidate_loc_str} {candidate_phone} "
-                    f"{role_text} {resume_snippet}"
+                    f"{role_text}"
                 )
 
                 # Match any word of the query against the blob (OR logic per word)
